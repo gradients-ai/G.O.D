@@ -159,6 +159,7 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
             task_type=req.task_type,
             augmentation_config=req.augmentation_config,
             gpu_ids=req.gpu_ids,
+            reward_functions=req.reward_functions,
         )
         await complete_model_prep(req.task_id, success=True, result=result, hotkey=req.hotkey)
         return result

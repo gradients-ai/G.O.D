@@ -736,6 +736,7 @@ def run_model_prep_container(
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
     augmentation_config=None,
     gpu_ids: list[int] = [0],
+    reward_functions=None,
     log_labels: dict[str, str] | None = None,
 ) -> ModelPrepResponse:
     """Run model prep container: augment model + compute baseline stats.
@@ -775,6 +776,13 @@ def run_model_prep_container(
             "--seed", str(augmentation_config.seed),
             "--intensity", str(augmentation_config.intensity),
         ]
+
+    if reward_functions:
+        reward_functions_payload = [
+            rf.model_dump() if hasattr(rf, "model_dump") else rf
+            for rf in reward_functions
+        ]
+        command += ["--reward-functions", json.dumps(reward_functions_payload)]
 
     env = _hf_container_env()
 

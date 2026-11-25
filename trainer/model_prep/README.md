@@ -9,7 +9,7 @@ Code that runs in the model-prep container before selected training jobs: adapte
 | `augmentation.py` | Deterministic layer selection and weight modification. |
 | `device_probes.py` | Small fixed workloads that time the prep device for compression tasks. A failed probe never fails prep. |
 | `entrypoint.py` | Container entrypoint. Prints its JSON result on the last line of stdout. |
-| `stats.py` | Dataset, weight-structure and training-dynamics statistics per task type. Reward function code is never run here: GRPO `baseline_reward_scores` is always empty. |
+| `stats.py` | Dataset, weight-structure and training-dynamics statistics per task type. |
 
 ## Compression tasks
 
