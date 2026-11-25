@@ -24,6 +24,8 @@ class ValidatorConfig(BaseConfig):
     s3_compatible_secret_key: str
     s3_bucket_name: str
     frontend_api_key: str
+    admin_api_key: str
+    trainer_api_key: str
     validator_port: str
     set_metagraph_weights: bool
     validator_port: str
@@ -51,6 +53,8 @@ class TrainerConfig:
     s3_compatible_endpoint: str
     s3_compatible_access_key: str
     s3_compatible_secret_key: str
+    trainer_api_key: str
+    orchestrator_ips: str
     s3_region: str = "us-east-1"
     quant_decode_work_root: str | None = None
 

@@ -12,6 +12,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `containers/` | Downloader, uploader, cache cleanup and requested-dataset cache. |
 | `dataset_adapters.py` | Column adapters for text datasets. |
 | `diffusion_dataset.py` | Arranges image datasets for diffusion training. |
+| `auth.py` | Access check on every route: source IP in `ORCHESTRATOR_IPS` and the `X-Trainer-Auth` header equal to `TRAINER_API_KEY`. Both required. |
 | `endpoints.py` | API routes the validator calls. |
 | `host.py` | GPU inspection, repository cloning and Docker host helpers. |
 | `host_resources.py` | Splits the host's cores and RAM into one equal share per GPU; every job container gets its GPUs' shares. |

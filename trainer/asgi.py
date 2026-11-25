@@ -18,6 +18,7 @@ from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
 from trainer import constants as trainer_cst
+from trainer.auth import check_trainer_auth_config
 from trainer.cleanup import start_cleanup_loop_in_thread
 from trainer.endpoints import factory_router
 from trainer.job_checkpoints import mounts_whole_checkpoints_volume
@@ -95,6 +96,7 @@ def factory() -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
+        check_trainer_auth_config()
         await cleanup_orphaned_trainer_state()
         try:
             await upload_retry.resume_after_restart(trainer_cst.QUANT_DECODE_WORK_ROOT)

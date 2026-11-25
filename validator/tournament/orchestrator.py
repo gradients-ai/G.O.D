@@ -66,6 +66,7 @@ from validator.infrastructure.service_constants import GET_GPU_AVAILABILITY_ENDP
 from validator.infrastructure.service_constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.infrastructure.service_constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
+from validator.infrastructure.trainer_auth import trainer_auth_headers
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import QuantSkuReference
 from validator.scoring.quant_ranking import freeform_bar
@@ -340,7 +341,7 @@ async def fetch_trainer_gpus(trainer_ip: str) -> list[GPUInfo]:
     Returns:
         List of GPUInfo objects from the trainer
     """
-    async with httpx.AsyncClient(timeout=cst.TRAINER_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=cst.TRAINER_HTTP_TIMEOUT, headers=trainer_auth_headers()) as client:
         # Default to port 8001 if no port is specified
         if ":" not in trainer_ip:
             trainer_ip_with_port = f"{trainer_ip}:8001"
@@ -397,7 +398,7 @@ async def start_training_task(trainer_ip: str, training_request: TrainerProxyReq
         logger.error(f"Request payload: {loggable_training_request(training_request)}")
         return False
 
-    async with httpx.AsyncClient(timeout=cst.TRAINER_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=cst.TRAINER_HTTP_TIMEOUT, headers=trainer_auth_headers()) as client:
         # Default to port 8001 if no port is specified
         if ":" not in trainer_ip:
             trainer_ip_with_port = f"{trainer_ip}:8001"
@@ -436,7 +437,7 @@ async def get_training_task_details(trainer_ip: str, task_id: str, hotkey: str) 
     Returns:
         TrainerTaskLog: The task log from the trainer
     """
-    async with httpx.AsyncClient(timeout=cst.TRAINER_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=cst.TRAINER_HTTP_TIMEOUT, headers=trainer_auth_headers()) as client:
         # Default to port 8001 if no port is specified
         if ":" not in trainer_ip:
             trainer_ip_with_port = f"{trainer_ip}:8001"
@@ -2318,7 +2319,7 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
 
         try:
             url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
-            async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT, headers=trainer_auth_headers()) as client:
                 response = await client.get(url)
                 if response.status_code == 404:
                     continue
@@ -2397,7 +2398,7 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
                 continue
             try:
                 url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
-                async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
+                async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT, headers=trainer_auth_headers()) as client:
                     response = await client.get(url, params={"hotkey": hotkey})
                     if response.status_code == 404:
                         continue
@@ -3355,7 +3356,7 @@ async def _find_seed_merge_job(job_id: str, config: Config) -> SeedMergeLookup:
         trainer_ip = trainer.trainer_ip if ":" in trainer.trainer_ip else f"{trainer.trainer_ip}:8001"
         try:
             url = f"http://{trainer_ip}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=job_id)}"
-            async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT, headers=trainer_auth_headers()) as client:
                 response = await client.get(url)
                 if response.status_code == 404:
                     continue
