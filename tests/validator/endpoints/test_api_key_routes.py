@@ -10,14 +10,12 @@ from validator.endpoints import tournament_orchestrator
 from validator.endpoints import transfer_balances
 
 
-ADMIN = "admin-key"
-FRONTEND = "frontend-key"
+KEY = "frontend-key"
 
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("ADMIN_API_KEY", ADMIN)
-    monkeypatch.setenv("FRONTEND_API_KEY", FRONTEND)
+    monkeypatch.setenv("FRONTEND_API_KEY", KEY)
     monkeypatch.setattr(tournament_orchestrator.tournament_sql, "remove_trainer", AsyncMock())
     monkeypatch.setattr(tournament_orchestrator.tournament_sql, "get_trainers", AsyncMock(return_value=[]))
     monkeypatch.setattr(transfer_balances, "refund_tournament_participants", AsyncMock(return_value=0))
@@ -32,39 +30,27 @@ def _bearer(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-ADMIN_ROUTES = [
+ROUTES = [
     ("delete", "/v1/tournament_orchestrator/remove_trainer/10.0.0.1"),
     ("post", "/tournament/t1/refund"),
-    ("post", "/v1/tournament_orchestrator/add_trainer?trainer_ip=10.0.0.1"),
+    ("get", "/v1/tournament_orchestrator/trainers"),
 ]
 
 
-@pytest.mark.parametrize("method,path", ADMIN_ROUTES)
-def test_admin_routes_refuse_the_frontend_key(client, method, path):
-    assert getattr(client, method)(path, headers=_bearer(FRONTEND)).status_code == 403
+@pytest.mark.parametrize("method,path", ROUTES)
+def test_protected_routes_refuse_a_wrong_key(client, method, path):
+    assert getattr(client, method)(path, headers=_bearer("wrong-key")).status_code == 403
 
 
-@pytest.mark.parametrize("method,path", ADMIN_ROUTES)
-def test_admin_routes_fail_closed_without_admin_key(client, monkeypatch, method, path):
-    monkeypatch.delenv("ADMIN_API_KEY")
-    assert getattr(client, method)(path, headers=_bearer("")).status_code in (401, 403)
-    assert getattr(client, method)(path, headers=_bearer(FRONTEND)).status_code == 403
-    assert getattr(client, method)(path, headers=_bearer(ADMIN)).status_code == 403
-
-
-def test_admin_key_is_accepted(client):
-    assert client.delete(ADMIN_ROUTES[0][1], headers=_bearer(ADMIN)).status_code == 200
-
-
-def test_read_routes_keep_the_frontend_key(client):
-    assert client.get("/v1/tournament_orchestrator/trainers", headers=_bearer(FRONTEND)).status_code == 200
-    assert client.get("/v1/tournament_orchestrator/trainers", headers=_bearer(ADMIN)).status_code == 403
+@pytest.mark.parametrize("method,path", ROUTES)
+def test_protected_routes_accept_the_api_key(client, method, path):
+    assert getattr(client, method)(path, headers=_bearer(KEY)).status_code == 200
 
 
 def test_errors_are_not_returned_to_the_caller(client, monkeypatch):
     monkeypatch.setattr(
         tournament_orchestrator.tournament_sql, "remove_trainer", AsyncMock(side_effect=RuntimeError("db password=x"))
     )
-    response = client.delete(ADMIN_ROUTES[0][1], headers=_bearer(ADMIN))
+    response = client.delete(ROUTES[0][1], headers=_bearer(KEY))
     assert response.status_code == 500
     assert "password" not in response.text

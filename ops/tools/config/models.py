@@ -24,7 +24,6 @@ class ValidatorConfig(BaseConfig):
     s3_compatible_secret_key: str
     s3_bucket_name: str
     frontend_api_key: str
-    admin_api_key: str
     trainer_api_key: str
     validator_port: str
     set_metagraph_weights: bool

@@ -40,17 +40,3 @@ async def get_api_key(credentials: HTTPAuthorizationCredentials = Security(auth_
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     return credentials.credentials
-
-
-async def get_admin_api_key(credentials: HTTPAuthorizationCredentials = Security(auth_scheme)):
-    """For admin routes (trainer registration, refunds). Requires ADMIN_API_KEY; with it unset every call is refused."""
-    expected_api_key = os.getenv("ADMIN_API_KEY")
-
-    if not expected_api_key:
-        logger.error("Rejected an admin request: ADMIN_API_KEY is not set on the validator")
-        raise HTTPException(status_code=403, detail="Admin API key is not configured")
-
-    if not _keys_match(credentials.credentials, expected_api_key):
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-    return credentials.credentials

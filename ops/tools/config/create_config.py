@@ -102,7 +102,6 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     # Check if POSTGRES_PASSWORD already exists in the environment
     postgres_password = os.getenv("POSTGRES_PASSWORD")
     frontend_api_key = os.getenv("FRONTEND_API_KEY")
-    admin_api_key = os.getenv("ADMIN_API_KEY")
     trainer_api_key = os.getenv("TRAINER_API_KEY")
 
     subtensor_network = input("🌐 Enter subtensor network (default: finney): ") or "finney"
@@ -143,7 +142,6 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     discord_url = input("🎯 Enter your discord webhook url (optional): ") or None
 
     frontend_api_key = generate_secure_password() if not frontend_api_key else frontend_api_key
-    admin_api_key = generate_secure_password(32) if not admin_api_key else admin_api_key
     trainer_api_key = generate_secure_password(32) if not trainer_api_key else trainer_api_key
 
     config = ValidatorConfig(
@@ -164,7 +162,6 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         s3_bucket_name=s3_bucket_name,
         s3_region=s3_region,
         frontend_api_key=frontend_api_key,
-        admin_api_key=admin_api_key,
         trainer_api_key=trainer_api_key,
         validator_port=validator_port,
         gpu_server=None,

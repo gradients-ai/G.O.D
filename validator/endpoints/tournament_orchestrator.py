@@ -7,7 +7,6 @@ from fastapi import Response
 from core.logging import get_logger
 from core.models.trainer_contract_models import GPUInfo
 from validator.app.config import Config
-from validator.app.dependencies import get_admin_api_key
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
 from validator.db.sql import tournaments as tournament_sql
@@ -112,11 +111,8 @@ async def get_training_stats(
 
 def factory_router() -> APIRouter:
     router = APIRouter(tags=["Tournament Orchestrator"])
-    # Changes to the trainer pool need the admin key; the read-only routes keep the frontend key.
-    router.add_api_route(ADD_TRAINER_ENDPOINT, add_trainer, methods=["POST"], dependencies=[Depends(get_admin_api_key)])
-    router.add_api_route(
-        REMOVE_TRAINER_ENDPOINT, remove_trainer, methods=["DELETE"], dependencies=[Depends(get_admin_api_key)]
-    )
+    router.add_api_route(ADD_TRAINER_ENDPOINT, add_trainer, methods=["POST"], dependencies=[Depends(get_api_key)])
+    router.add_api_route(REMOVE_TRAINER_ENDPOINT, remove_trainer, methods=["DELETE"], dependencies=[Depends(get_api_key)])
     router.add_api_route(GET_TRAINERS_ENDPOINT, get_trainers, methods=["GET"], dependencies=[Depends(get_api_key)])
     router.add_api_route(
         GET_TRAINING_STATS_ENDPOINT, get_training_stats, methods=["GET"], dependencies=[Depends(get_api_key)]

@@ -97,8 +97,7 @@ Written by `task config`:
 | `S3_COMPATIBLE_ENDPOINT`, `S3_COMPATIBLE_ACCESS_KEY`, `S3_COMPATIBLE_SECRET_KEY`, `S3_REGION` | `validator/infrastructure/minio_client.py` | The S3-compatible store. |
 | `S3_BUCKET_NAME` | `core/constants/credentials.py` | Bucket for datasets and artifacts. |
 | `VALIDATOR_PORT` | `ops/validator_ops/start_validator.sh` | Port of the validator API. |
-| `FRONTEND_API_KEY` | `validator/app/dependencies.py` | API key for the protected read-only validator endpoints (used by `subnet_api`). Generated for you. |
-| `ADMIN_API_KEY` | `validator/app/dependencies.py` | API key for the admin routes: `/v1/tournament_orchestrator/*` (add or remove trainers) and the refund route. Required: without it those routes return 403. Generated for you. Keep it separate from `FRONTEND_API_KEY`. |
+| `FRONTEND_API_KEY` | `validator/app/dependencies.py` | API key for the protected validator endpoints. Generated for you. |
 | `TRAINER_API_KEY` | `validator/infrastructure/trainer_auth.py` | Shared key sent as the `X-Trainer-Auth` header on every request to a trainer. Every trainer must have the same value in its `.trainer.env`. Generated for you. |
 | `REFRESH_NODES` | `validator/app/config.py` | Whether to refresh nodes from the metagraph. |
 | `DISCORD_WEBHOOK` | `validator/app/config.py` | Optional webhook for alerts. |
@@ -272,11 +271,11 @@ A trainer executes miner code. It needs Docker, NVIDIA drivers, the NVIDIA Conta
    curl -H "X-Trainer-Auth: <TRAINER_API_KEY>" http://localhost:8001/v1/trainer/get_gpu_availability
    ```
 
-5. Register the trainer with the validator. Run this where the validator API is reachable, with the `ADMIN_API_KEY` from `.vali.env`.
+5. Register the trainer with the validator. Run this where the validator API is reachable, with the `FRONTEND_API_KEY` from `.vali.env`.
 
    ```bash
    curl -X POST "http://<validator-host>:<VALIDATOR_PORT>/v1/tournament_orchestrator/add_trainer?trainer_ip=<trainer-ip>" \
-     -H "Authorization: Bearer <ADMIN_API_KEY>"
+     -H "Authorization: Bearer <FRONTEND_API_KEY>"
    ```
 
 The validator then reads the trainer's GPUs from port `8001` (or from `<ip>:<port>` when you pass one) and stores them. The response lists the GPUs it registered.
