@@ -11,28 +11,14 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
-from core.logging import get_logger
 from validator.infrastructure.minio_client import AsyncMinioClient
 from validator.infrastructure.minio_client import async_minio_client
-
-
-logger = get_logger(__name__)
 
 
 def _is_our_presigned_url(value: str, client: AsyncMinioClient) -> bool:
     if "X-Amz-Signature=" not in value or not value.startswith(("http://", "https://")):
         return False
     return urlparse(value).netloc.lower() == client.endpoint.lower()
-
-
-async def _resign(value: str, client: AsyncMinioClient) -> str:
-    # Not get_new_presigned_url: that logs every URL, and a task list holds thousands.
-    try:
-        bucket_name, object_name = client.parse_s3_url(value)
-        return await client.get_presigned_url(bucket_name, object_name)
-    except Exception as e:  # noqa: BLE001 - keep the stored URL; no worse than before
-        logger.warning(f"Could not re-sign a presigned URL: {type(e).__name__}")
-        return value
 
 
 async def resign_presigned_urls(obj: Any, client: AsyncMinioClient = async_minio_client) -> Any:
@@ -42,7 +28,10 @@ async def resign_presigned_urls(obj: Any, client: AsyncMinioClient = async_minio
     left as they are. Returns obj (or the replacement, when obj is itself a string).
     """
     if isinstance(obj, str):
-        return await _resign(obj, client) if _is_our_presigned_url(obj, client) else obj
+        if not _is_our_presigned_url(obj, client):
+            return obj
+        # Keep the stored URL if it cannot be re-signed: no worse than before.
+        return await client.get_new_presigned_url(obj) or obj
 
     if isinstance(obj, BaseModel):
         names = [name for name in type(obj).model_fields if getattr(obj, name, None) is not None]
