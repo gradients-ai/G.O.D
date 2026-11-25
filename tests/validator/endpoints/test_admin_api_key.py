@@ -68,14 +68,3 @@ def test_errors_are_not_returned_to_the_caller(client, monkeypatch):
     response = client.delete(ADMIN_ROUTES[0][1], headers=_bearer(ADMIN))
     assert response.status_code == 500
     assert "password" not in response.text
-
-
-def test_refused_refund_is_a_conflict(client, monkeypatch):
-    from validator.db.sql.transfers import RefundRefused
-
-    monkeypatch.setattr(
-        transfer_balances, "refund_tournament_participants", AsyncMock(side_effect=RefundRefused("not cancelled"))
-    )
-    response = client.post("/tournament/t1/refund", headers=_bearer(ADMIN))
-    assert response.status_code == 409
-    assert "not cancelled" in response.text

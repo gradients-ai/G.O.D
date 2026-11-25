@@ -13,7 +13,6 @@ from validator.app.config import Config
 from validator.app.dependencies import get_admin_api_key
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
-from validator.db.sql.transfers import RefundRefused
 from validator.db.sql.transfers import get_balance_events_by_coldkey
 from validator.db.sql.transfers import get_balance_events_by_tournament
 from validator.db.sql.transfers import get_coldkey_balance_by_address
@@ -158,7 +157,7 @@ async def get_balance_events_by_tournament_endpoint(
 
 async def refund_tournament_endpoint(tournament_id: str, config: Config = Depends(get_config)) -> dict:
     """
-    Refund all participation fees for a cancelled tournament. Any other status is refused with 409.
+    Refund all participation fees for a tournament
 
     Args:
         tournament_id: Tournament ID to refund
@@ -169,14 +168,7 @@ async def refund_tournament_endpoint(tournament_id: str, config: Config = Depend
     """
     logger.info(f"Processing refunds for tournament: {tournament_id}")
 
-    try:
-        refund_count = await refund_tournament_participants(config.psql_db, tournament_id)
-    except RefundRefused as e:
-        logger.warning(f"Refund refused: {e}")
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception:
-        logger.exception(f"Refund of tournament {tournament_id} failed and was rolled back")
-        raise HTTPException(status_code=500, detail="Refund failed; nothing was refunded")
+    refund_count = await refund_tournament_participants(config.psql_db, tournament_id)
 
     response = {
         "tournament_id": tournament_id,
@@ -241,7 +233,7 @@ def factory_router() -> APIRouter:
         refund_tournament_endpoint,
         methods=["POST"],
         summary="Refund tournament participants",
-        description="Refund all participation fees for a cancelled tournament",
+        description="Refund all participation fees for a tournament",
         tags=["tournaments"],
         dependencies=[Depends(get_admin_api_key)],
         include_in_schema=False,

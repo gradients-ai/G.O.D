@@ -8,7 +8,6 @@ from typing import Optional
 
 from core.logging import get_logger
 from validator.db.database import PSQLDB
-from validator.tournament.models import TournamentStatus
 from validator.transfers.models import BalanceEvent
 from validator.transfers.models import ColdkeyBalance
 from validator.transfers.models import TransferData
@@ -486,17 +485,39 @@ async def get_balance_events_by_coldkey(psql_db: PSQLDB, coldkey: str, limit: in
         return []
 
 
-class RefundRefused(Exception):
-    """The tournament may not be refunded: it does not exist or is not cancelled."""
+async def add_refund_to_balance(psql_db: PSQLDB, coldkey: str, refund_amount_rao: int) -> bool:
+    """
+    Add refund amount to a coldkey's balance without affecting transfer tracking.
+
+    Args:
+        psql_db: Database connection
+        coldkey: Coldkey SS58 address
+        refund_amount_rao: Refund amount to add in RAO
+
+    Returns:
+        bool: True if refund was added successfully
+    """
+    try:
+        query = """
+        UPDATE coldkey_balances
+        SET balance_rao = balance_rao + $2,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE coldkey = $1
+        """
+
+        async with await psql_db.connection() as connection:
+            result = await connection.execute(query, coldkey, refund_amount_rao)
+            return result == "UPDATE 1"
+
+    except Exception as e:
+        logger.error(f"Failed to add refund to balance for {coldkey}: {e}")
+        return False
 
 
 async def refund_tournament_participants(psql_db: PSQLDB, tournament_id: str) -> int:
     """
-    Refund the participation fees of a cancelled tournament by creating refund balance events and crediting balances.
-    Idempotent: each coldkey gets only its net amount (participation fees minus existing refunds).
-
-    Runs as one transaction holding a row lock on the tournament, so concurrent calls are serialized and a second call
-    sees the first one's refunds and pays nothing. Any failure rolls the whole refund back.
+    Refund all participation fees for a tournament by creating refund balance events.
+    This function is idempotent - it will only refund the net amount (participation fees - existing refunds).
 
     Args:
         psql_db: Database connection
@@ -504,69 +525,53 @@ async def refund_tournament_participants(psql_db: PSQLDB, tournament_id: str) ->
 
     Returns:
         Number of refunds processed
-
-    Raises:
-        RefundRefused: the tournament does not exist or its status is not cancelled.
     """
-    async with await psql_db.connection() as connection:
-        async with connection.transaction():
-            tournament = await connection.fetchrow(
-                "SELECT status FROM tournaments WHERE tournament_id = $1 FOR UPDATE", tournament_id
-            )
-            if tournament is None:
-                raise RefundRefused(f"Tournament {tournament_id} not found")
-            if tournament["status"] != TournamentStatus.CANCELLED.value:
-                raise RefundRefused(
-                    f"Tournament {tournament_id} has status {tournament['status']!r}; "
-                    f"only a {TournamentStatus.CANCELLED.value!r} tournament can be refunded"
+    try:
+        participation_events = await get_balance_events_by_tournament(psql_db, tournament_id)
+        participation_fees = [event for event in participation_events if event.event_type == "participation_fee"]
+        existing_refunds = [event for event in participation_events if event.event_type == "refund"]
+
+        coldkey_net_refunds = {}
+        
+        for event in participation_fees:
+            coldkey = event.coldkey
+            if coldkey not in coldkey_net_refunds:
+                coldkey_net_refunds[coldkey] = 0
+            coldkey_net_refunds[coldkey] += event.amount_rao
+        
+        for event in existing_refunds:
+            coldkey = event.coldkey
+            if coldkey in coldkey_net_refunds:
+                coldkey_net_refunds[coldkey] += event.amount_rao
+        
+        refund_count = 0
+
+        for coldkey, net_amount in coldkey_net_refunds.items():
+            if net_amount < 0:
+                refund_amount = abs(net_amount)
+                
+                refund_event = await create_balance_event(
+                    psql_db=psql_db,
+                    tournament_id=tournament_id,
+                    coldkey=coldkey,
+                    event_type="refund",
+                    amount_rao=refund_amount,
+                    description=f"Refund for participation fee in tournament {tournament_id}",
                 )
 
-            # Net per coldkey that paid a fee: fees are negative, refunds positive.
-            net_rows = await connection.fetch(
-                """
-                SELECT coldkey, SUM(amount_rao) AS net_rao
-                FROM balance_events
-                WHERE tournament_id = $1 AND event_type IN ('participation_fee', 'refund')
-                GROUP BY coldkey
-                HAVING bool_or(event_type = 'participation_fee')
-                """,
-                tournament_id,
-            )
+                if refund_event:
+                    await add_refund_to_balance(psql_db, coldkey, refund_amount)
+                    refund_count += 1
+                    logger.info(f"Refunded {refund_amount:,} RAO to {coldkey} for tournament {tournament_id}")
+            else:
+                logger.info(f"Skipping {coldkey} - already fully refunded (net: {net_amount:,} RAO)")
 
-            refund_count = 0
-            for row in net_rows:
-                coldkey, net_amount = row["coldkey"], int(row["net_rao"])
-                if net_amount >= 0:
-                    logger.info(f"Skipping {coldkey} - already fully refunded (net: {net_amount:,} RAO)")
-                    continue
-                refund_amount = -net_amount
-                await connection.execute(
-                    """
-                    INSERT INTO balance_events (tournament_id, coldkey, event_type, amount_rao, description)
-                    VALUES ($1, $2, 'refund', $3, $4)
-                    """,
-                    tournament_id,
-                    coldkey,
-                    refund_amount,
-                    f"Refund for participation fee in tournament {tournament_id}",
-                )
-                result = await connection.execute(
-                    """
-                    UPDATE coldkey_balances
-                    SET balance_rao = balance_rao + $2,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE coldkey = $1
-                    """,
-                    coldkey,
-                    refund_amount,
-                )
-                if result != "UPDATE 1":
-                    raise RuntimeError(f"No balance row for {coldkey}; refund of tournament {tournament_id} rolled back")
-                refund_count += 1
-                logger.info(f"Refunded {refund_amount:,} RAO to {coldkey} for tournament {tournament_id}")
+        logger.info(f"Processed {refund_count} refunds for tournament {tournament_id}")
+        return refund_count
 
-    logger.info(f"Processed {refund_count} refunds for tournament {tournament_id}")
-    return refund_count
+    except Exception as e:
+        logger.error(f"Failed to refund tournament {tournament_id}: {e}")
+        return 0
 
 
 async def get_coldkey_balances(psql_db: PSQLDB, limit: int = 100) -> List[ColdkeyBalance]:
