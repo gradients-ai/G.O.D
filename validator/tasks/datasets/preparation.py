@@ -178,18 +178,42 @@ async def train_test_split(
     return split_dataset
 
 
+def memory_efficient_prep() -> bool:
+    """Opt-in (GOD_MEMORY_EFFICIENT_PREP=true): stream rows to the JSON files, read only the sampled columns and
+    de-duplicate by digest, so prep memory stays flat however large the dataset. Off by default, where prep runs
+    exactly as before; the organic platform's worker turns it on."""
+    return os.getenv("GOD_MEMORY_EFFICIENT_PREP", "false").lower() == "true"
+
+
+_INSTRUCT_KEY_COLUMNS = (
+    cst.STANDARD_SYSTEM_COLUMN,
+    cst.STANDARD_INSTRUCT_COLUMN,
+    cst.STANDARD_INPUT_COLUMN,
+    cst.STANDARD_OUTPUT_COLUMN,
+)
+
+
 def _instruct_row_key(row: Mapping) -> tuple:
     """Identity of an instruct row for de-duplication. Rows with equal keys are duplicates."""
-    columns = (cst.STANDARD_SYSTEM_COLUMN, cst.STANDARD_INSTRUCT_COLUMN, cst.STANDARD_INPUT_COLUMN, cst.STANDARD_OUTPUT_COLUMN)
-    return tuple(str(row.get(col) or "").strip() for col in columns)
+    return tuple(str(row.get(col) or "").strip() for col in _INSTRUCT_KEY_COLUMNS)
+
+
+def _instruct_row_digest(row: Mapping) -> bytes:
+    """16-byte digest of _instruct_row_key, so de-duplication holds no row text in memory."""
+    return hashlib.blake2b(json.dumps(_instruct_row_key(row)).encode(), digest_size=16).digest()
 
 
 def drop_duplicate_instruct_rows(dataset: Dataset) -> Dataset:
     """Drop duplicate rows (first occurrence kept) so no test row also appears in train."""
-    seen: set[tuple] = set()
+    rows, row_key = dataset, _instruct_row_key
+    if memory_efficient_prep():
+        key_columns = [col for col in _INSTRUCT_KEY_COLUMNS if col in dataset.column_names]
+        rows = dataset.select_columns(key_columns) if key_columns else dataset
+        row_key = _instruct_row_digest
+    seen: set = set()
     keep: list[int] = []
-    for idx, row in enumerate(dataset):
-        key = _instruct_row_key(row)
+    for idx, row in enumerate(rows):
+        key = row_key(row)
         if key in seen:
             continue
         seen.add(key)
@@ -350,15 +374,17 @@ def _chat_fields(task: ChatRawTask | QuantRawTask) -> tuple[str, str]:
     return source.chat_role_field, source.chat_content_field
 
 
-def change_to_json_format(dataset: Dataset, columns: list[str], task: AnyTextTypeRawTask | QuantRawTask = None):
-    result = []
-    total_rows = 0
-    fully_empty_rows = 0
+def _converted_rows(dataset: Dataset, columns: list[str], task: AnyTextTypeRawTask | QuantRawTask | None):
+    """Yield (row_dict, is_row_empty) for each row kept, reading only the sampled columns, one row at a time."""
     is_chat_task = _is_chat_task(task)
     if is_chat_task:
         role_field, content_field = _chat_fields(task)
+    present = [col for col in columns if col in dataset.column_names]
+    if memory_efficient_prep() and present and len(present) < len(dataset.column_names):
+        # Unused columns can be most of a dataset's bytes (e.g. test cases); never decode them.
+        dataset = dataset.select_columns(present)
 
-    for idx, row in enumerate(dataset):
+    for row in dataset:
         row_dict = {}
         is_row_empty = True
         for col in columns:
@@ -378,17 +404,73 @@ def change_to_json_format(dataset: Dataset, columns: list[str], task: AnyTextTyp
         if is_chat_task and is_row_empty:
             continue
 
-        result.append(row_dict)
-        total_rows += 1
-        if is_row_empty:
-            fully_empty_rows += 1
+        yield row_dict, is_row_empty
 
+
+def _check_empty_rows(total_rows: int, fully_empty_rows: int) -> None:
     if total_rows > 0 and (fully_empty_rows / total_rows) > 0.8:
         raise ValueError(f"More than 80% of rows are fully empty ({fully_empty_rows}/{total_rows} rows)")
 
-    result = _validate_dpo_data(result, task)
 
-    return result
+def change_to_json_format(dataset: Dataset, columns: list[str], task: AnyTextTypeRawTask | QuantRawTask = None):
+    result = []
+    fully_empty_rows = 0
+    for row_dict, is_row_empty in _converted_rows(dataset, columns, task):
+        result.append(row_dict)
+        fully_empty_rows += is_row_empty
+    _check_empty_rows(len(result), fully_empty_rows)
+    return _validate_dpo_data(result, task)
+
+
+def write_json_rows(
+    dataset: Dataset, columns: list[str], task: AnyTextTypeRawTask | QuantRawTask | None, path: str
+) -> int:
+    """Write the rows change_to_json_format would return to path as a JSON array, one row at a time.
+
+    Same rows, checks and bytes as json.dump(change_to_json_format(...)), without holding the dataset in memory.
+    Returns the number of rows written.
+    """
+    is_dpo = isinstance(task, DpoRawTask)
+    total_rows = fully_empty_rows = written = 0
+    with open(path, "w") as f:
+        f.write("[")
+        for row_dict, is_row_empty in _converted_rows(dataset, columns, task):
+            total_rows += 1
+            fully_empty_rows += is_row_empty
+            if is_dpo and not _is_valid_dpo_row(row_dict):
+                continue
+            f.write(", " if written else "")
+            f.write(json.dumps(row_dict))
+            written += 1
+        f.write("]")
+    _check_empty_rows(total_rows, fully_empty_rows)
+    if is_dpo:
+        if written < total_rows:
+            logger.warning(f"Filtered out {total_rows - written} DPO rows with empty prompt/chosen/rejected fields")
+        if written == 0:
+            raise ValueError("All DPO data points have empty prompt, chosen, or rejected fields")
+    return written
+
+
+async def save_json_rows_to_temp_file(
+    dataset: Dataset, columns: list[str], task: AnyTextTypeRawTask | QuantRawTask | None, prefix: str
+) -> tuple[str, int]:
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json", prefix=prefix)
+    temp_file.close()
+    try:
+        write_json_rows(dataset, columns, task, temp_file.name)
+    except BaseException:
+        os.remove(temp_file.name)
+        raise
+    return temp_file.name, os.path.getsize(temp_file.name)
+
+
+def _is_valid_dpo_row(row: dict) -> bool:
+    return bool(
+        row.get(cst.STANDARD_DPO_PROMPT_COLUMN, "").strip()
+        and row.get(cst.STANDARD_DPO_CHOSEN_COLUMN, "").strip()
+        and row.get(cst.STANDARD_DPO_REJECTED_COLUMN, "").strip()
+    )
 
 
 def _validate_dpo_data(result: list[dict], task: AnyTextTypeRawTask) -> list[dict]:
@@ -396,15 +478,7 @@ def _validate_dpo_data(result: list[dict], task: AnyTextTypeRawTask) -> list[dic
         return result
 
     original_count = len(result)
-    filtered_result = [
-        row
-        for row in result
-        if (
-            row.get(cst.STANDARD_DPO_PROMPT_COLUMN, "").strip()
-            and row.get(cst.STANDARD_DPO_CHOSEN_COLUMN, "").strip()
-            and row.get(cst.STANDARD_DPO_REJECTED_COLUMN, "").strip()
-        )
-    ]
+    filtered_result = [row for row in result if _is_valid_dpo_row(row)]
 
     if len(filtered_result) < original_count:
         logger.warning(f"Filtered out {original_count - len(filtered_result)} DPO rows with empty prompt/chosen/rejected fields")
@@ -413,6 +487,12 @@ def _validate_dpo_data(result: list[dict], task: AnyTextTypeRawTask) -> list[dic
         raise ValueError("All DPO data points have empty prompt, chosen, or rejected fields")
 
     return filtered_result
+
+
+async def _json_file(dataset: Dataset, columns: list[str], task, prefix: str) -> tuple[str, int]:
+    if memory_efficient_prep():
+        return await save_json_rows_to_temp_file(dataset, columns, task, prefix=prefix)
+    return await save_json_to_temp_file(change_to_json_format(dataset, columns, task), prefix=prefix)
 
 
 async def _process_and_upload_datasets(
@@ -435,9 +515,7 @@ async def _process_and_upload_datasets(
 
     try:
         if should_reupload_train:
-            train_data_json = change_to_json_format(train_dataset, columns_to_sample, task)
-
-            train_json_path, train_json_size = await save_json_to_temp_file(train_data_json, prefix="train_data_")
+            train_json_path, train_json_size = await _json_file(train_dataset, columns_to_sample, task, prefix="train_data_")
             files_to_delete.append(train_json_path)
             await _check_file_size(train_json_size, "train_data")
             train_json_url = await upload_file_to_minio(
@@ -446,8 +524,7 @@ async def _process_and_upload_datasets(
         else:
             train_json_url = train_dataset
         if should_reupload_test:
-            test_data_json = change_to_json_format(test_dataset, columns_to_sample, task)
-            test_json_path, test_json_size = await save_json_to_temp_file(test_data_json, prefix="test_data_")
+            test_json_path, test_json_size = await _json_file(test_dataset, columns_to_sample, task, prefix="test_data_")
             files_to_delete.append(test_json_path)
             await _check_file_size(test_json_size, "test_data")
             test_json_url = await upload_file_to_minio(test_json_path, BUCKET_NAME, f"{os.urandom(8).hex()}_test_data.json")
@@ -455,8 +532,9 @@ async def _process_and_upload_datasets(
             test_json_url = test_dataset
         calibration_json_url = None
         if calibration_dataset is not None:
-            calibration_json = change_to_json_format(calibration_dataset, columns_to_sample, task)
-            calibration_path, calibration_size = await save_json_to_temp_file(calibration_json, prefix="calibration_data_")
+            calibration_path, calibration_size = await _json_file(
+                calibration_dataset, columns_to_sample, task, prefix="calibration_data_"
+            )
             files_to_delete.append(calibration_path)
             await _check_file_size(calibration_size, "calibration_data")
             calibration_json_url = await upload_file_to_minio(
