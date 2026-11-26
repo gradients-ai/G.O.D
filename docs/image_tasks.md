@@ -103,8 +103,9 @@ Text-to-image candidates are scored on the classifier-free-guided prediction at
 the model's inference CFG: `uncond + cfg * (cond - uncond)` from the captioned and
 empty-prompt predictions of the same noisy input. That is the prediction that makes
 the images users see, and it amplifies exactly what the LoRA learned about the
-prompt. The result's `guided_losses` vector is the score; `text_guided_losses` and
-`no_text_losses` are still reported. Edit tasks keep the unguided score:
+prompt. For these tasks `text_guided_losses` holds the guided loss and is the whole
+score (weight 1.0, `DIFFUSION_GUIDED_SCORE_MODEL_TYPES`); `no_text_losses` holds the
+empty-prompt loss for reference. Edit tasks keep the unguided score:
 `DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT` x captioned + the rest x empty-prompt, mask-weighted.
 
 | Family | Noise levels | Score | Cases |
@@ -119,9 +120,8 @@ HiDream O1 noises pixel-space x0 with `noise_scale=8`, so its SNR at sigma is
 (1 - sigma) / (8 sigma) and the difficulty of latent sigma 0.9 sits near sigma 0.53.
 Above sigma 0.84 its input is close to pure noise with nothing left to denoise.
 
-On the ComfyUI path one guided pass yields all three losses (a post-CFG hook keeps
-the captioned and empty-prompt predictions), at the cost of the two unguided passes
-it replaces. On the AI Toolkit path the empty-prompt pass runs first and stores its
+On the ComfyUI path one guided pass yields both losses (a post-CFG hook keeps the
+empty-prompt prediction), at the cost of the two unguided passes it replaces. On the AI Toolkit path the empty-prompt pass runs first and stores its
 prediction per case; the captioned pass combines it with its own prediction. Both
 passes see identical seeded noise and timesteps for each case.
 

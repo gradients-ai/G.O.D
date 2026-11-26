@@ -50,8 +50,6 @@ MODEL_REPOS = {
     "moss-image-base": "OpenMOSS-Team/MOSS-Image-Base",
 }
 TEMPLATE_ROOT = REPO_ROOT / "core" / "training_templates"
-# Per-candidate compute is held fixed: about CASES_PER_MODE scored cases per caption mode, spread over the held-out
-# samples, so a bigger test split trades repeats for samples instead of adding time.
 CASES_PER_MODE = 40
 MIN_REPEATS = 5
 MAX_REPEATS = 20
@@ -59,21 +57,12 @@ SAMPLE_STEM_HEX_CHARS = 16
 LORA_DOWN_SUFFIXES = (".lora_down.weight", ".lora_A.weight")
 
 # AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise.
-# Score the noisiest informative part of the range: there the learned concept decides the prediction, while lower
-# noise mostly rewards LoRAs that left the base model's detail prior untouched.
-# Latent flow models: sigma 0.9-1.0 (denoising steps 0-100).
 EVAL_MIN_DENOISING_STEPS = 0
 EVAL_MAX_DENOISING_STEPS = 100
 EVAL_MUSUBI_MAX_TIMESTEP = 1000
-# HiDream O1 noises pixel-space x0 with noise_scale=8, so SNR = (1 - sigma) / (8 * sigma) and the same difficulty
-# as latent sigma 0.9 sits near sigma 0.53. Text-to-image scores sigma 0.54-0.84: above that the input is close to
-# pure noise with nothing left to denoise, and the noisiest band alone picked the wrong winner.
 EVAL_HIDREAM_MIN_DENOISING_STEPS = 160
 EVAL_HIDREAM_MAX_DENOISING_STEPS = 460
-# HiDream edit (Musubi) keeps sigma 0.33-1.0.
 EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 330
-# Text-to-image is scored on the classifier-free-guided prediction at each model's inference CFG, the prediction
-# that makes the images; edits keep the unguided 50/50 captioned/empty score, which already separates them.
 INFERENCE_CFG = {"flux2-klein-4b": 4.0, "moss-image-base": 3.0, "hidream-o1": 5.0}
 
 
@@ -302,13 +291,9 @@ def _run_objective(
         ["python", "run.py", str(config_path)], cwd=AI_TOOLKIT_ROOT, env=_subprocess_env(), check=True
     )
     records = json.loads(output.read_text(encoding="utf-8"))
-    summary = _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
-    if cfg and cfg["role"] == "combine":
-        captioned = _mean_field_by_sample(records, "loss_captioned", sample_count, repeats, "AI Toolkit")
-        if captioned is None:
-            raise ValueError("Guided evaluation returned no captioned losses; is the evaluator extension current?")
-        summary["captioned_losses"] = captioned
-    return summary
+    if cfg and cfg["role"] == "combine" and not all(record.get("cfg_guided") for record in records):
+        raise ValueError("Guided evaluation returned unguided losses; is the evaluator extension current?")
+    return _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
 
 
 def repeats_per_sample(samples: int) -> int:
@@ -541,15 +526,12 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             config["seed"],
                             {"role": role, "scale": scale, "store": store} if role else None,
                         )
-                # The empty-prompt pass runs first: with CFG it stores the predictions the captioned pass combines.
                 blank = run(no_text, "no_text")
                 guided = run(conditional, "conditional")
                 eval_loss = {
-                    "text_guided_losses": guided.get("captioned_losses", guided["losses"]),
+                    "text_guided_losses": guided["losses"],
                     "no_text_losses": blank["losses"],
                 }
-                if "captioned_losses" in guided:
-                    eval_loss["guided_losses"] = guided["losses"]
                 if "changed_losses" in guided:
                     eval_loss["text_guided_changed_losses"] = guided["changed_losses"]
                 if "unchanged_losses" in guided:

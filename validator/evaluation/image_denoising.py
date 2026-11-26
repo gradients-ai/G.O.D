@@ -15,7 +15,6 @@ class FlowPredictionSampler:
         self.noise_batch_size = noise_batch_size
         self.rows = []
         self.loss_function = loss_function
-        # With a CFGRecorder on the guided model, each call also yields the captioned and empty-prompt predictions.
         self.recorder = recorder
 
     @torch.inference_mode()
@@ -31,8 +30,7 @@ class FlowPredictionSampler:
                 losses = self.loss_function(noisy, denoised, target, case["sigma"]).cpu().tolist()
                 parts = {}
                 if self.recorder is not None:
-                    cond, uncond = self.recorder.take()
-                    parts["mse_text"] = self.loss_function(noisy, cond, target, case["sigma"]).cpu().tolist()
+                    uncond = self.recorder.take()
                     parts["mse_empty"] = self.loss_function(noisy, uncond, target, case["sigma"]).cpu().tolist()
                 for index, (seed, loss) in enumerate(zip(case["seeds"][start:stop], losses, strict=True)):
                     row = {"stratum": case["stratum"], "sigma": case["sigma"], "seed": seed, "mse": loss}
@@ -43,13 +41,13 @@ class FlowPredictionSampler:
 
 
 class CFGRecorder:
-    """Comfy post-CFG hook that keeps the captioned and empty-prompt predictions behind each guided prediction."""
+    """Comfy post-CFG hook that keeps the empty-prompt prediction behind each guided prediction."""
 
     def __init__(self):
         self._last = None
 
     def __call__(self, args):
-        self._last = (args["cond_denoised"], args["uncond_denoised"])
+        self._last = args["uncond_denoised"]
         return args["denoised"]
 
     def take(self):

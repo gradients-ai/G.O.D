@@ -40,23 +40,14 @@ def _enable_download_progress() -> None:
         logger.info("huggingface progress bars unavailable; using stage logs only")
 
 
-# Score only the noisiest part of the range, where a LoRA's learned concept (layout, identity, style) decides the
-# prediction. Lower noise levels mostly measure damage to the base model's detail prior, so an average over the
-# full range ranks barely-trained LoRAs first and leaves strong models within hundredths of a percent.
 DEFAULT_SIGMA_MIN = 0.9
 DEFAULT_SIGMA_MAX = 1.0
 DEFAULT_STRATA = 8
-# Families with a known inference recipe are scored on the steps their official schedule actually takes in that
-# range, using the classifier-free-guided prediction at their inference CFG: the prediction that makes the images.
-# (steps, cfg). Z-Image-Turbo is distilled and samples without CFG; 2.0 is the lightest guidance that separates.
 INFERENCE_RECIPES = {
     "z-image": (9, 2.0),
     "qwen-image": (50, 4.0),
     "krea2": (52, 3.5),
 }
-# Per-miner compute is held fixed: the case budget per caption mode is spread over the test images, so a bigger
-# test split trades noise draws per level for images instead of adding time. A guided case costs a captioned and
-# an empty-prompt forward, the same as the two unguided passes it replaces.
 CASES_PER_MODE = 512
 MIN_NOISES = 8
 MAX_NOISES = 64
@@ -169,7 +160,7 @@ def evaluate(config, output):
                 name, _ = materialize_model(api, repo, None, config["comfy_root"] / "models/loras")
                 model, candidate_clip = adapter.apply_lora(base, clip, name)
                 candidate_conditioning = {} if candidate_clip.patcher.patches else conditioning_cache
-                vectors = {"text": [], "no_text": [], "guided": []}
+                vectors = {"text": [], "no_text": []}
                 recorder = CFGRecorder() if guidance else None
                 if recorder is not None:
                     model = model.clone()
@@ -209,11 +200,9 @@ def evaluate(config, output):
                         sigmas=levels,
                     )
                     if guidance:
-                        # One guided pass: the score, plus the captioned and empty-prompt losses on the same cases.
                         positive, negative = conditioning(item["caption"]), conditioning("")
                         rows = run_pass(data, questions, positive, negative, guidance)
-                        vectors["guided"].append(float(np.mean([row["mse"] for row in rows])))
-                        vectors["text"].append(float(np.mean([row["mse_text"] for row in rows])))
+                        vectors["text"].append(float(np.mean([row["mse"] for row in rows])))
                         vectors["no_text"].append(float(np.mean([row["mse_empty"] for row in rows])))
                         if first_check is None:
                             first_check = (data, questions, positive, negative, guidance, [row["mse"] for row in rows])
@@ -236,10 +225,10 @@ def evaluate(config, output):
                 repeated = run_pass(data, questions, positive, negative, cfg)
                 if not np.allclose(original, [r["mse"] for r in repeated], rtol=1e-5, atol=1e-7):
                     raise ValueError("Prediction scores failed repeatability check")
-                eval_loss = {"text_guided_losses": vectors["text"], "no_text_losses": vectors["no_text"]}
-                if vectors["guided"]:
-                    eval_loss["guided_losses"] = vectors["guided"]
-                result[repo] = {"eval_loss": eval_loss, "is_finetune": True}
+                result[repo] = {
+                    "eval_loss": {"text_guided_losses": vectors["text"], "no_text_losses": vectors["no_text"]},
+                    "is_finetune": True,
+                }
                 logger.info(
                     "eval_stage=candidate_done repo=%s images=%s elapsed=%.1fs",
                     repo,
