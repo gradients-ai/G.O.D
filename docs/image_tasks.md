@@ -50,9 +50,22 @@ keeps complete source/target/instruction groups together during the held-out
 split.
 
 Synthetic image tasks generate `IMAGE_SYNTH_TEST_PAIRS` (8) pairs on top of the
-training pairs they draw, and the split holds out exactly those. The training set
-keeps its size and training hours scale with the training pairs. Organic datasets
-keep the 10% split. Trainer containers reject missing controls and paths that escape the
+training pairs they draw, and the split holds out exactly those: the generator
+writes them last, so they are the highest-numbered pairs. They keep the task's
+concept but put it where training never goes (a product in use or at night, a
+design system on a watch or billboard, a mascot drawn in the trained style, an edit
+rule on unseen object types), so a LoRA that memorised its training set scores
+badly. The training set keeps its size and training hours scale with the training
+pairs. Organic datasets keep the random 10% split.
+
+Each synthetic task locks one concept ([`synthetics/concepts.py`](../validator/tasks/synthetics/concepts.py)):
+an LLM writes a detailed identity spec and short contexts, a reference image is
+generated and checked against the spec by a vision model, and every image is
+rendered from that reference and checked against it again. Captions are only the
+concept's name plus the context; the spec reaches the image generator, never the
+caption, so the concept must be learned from the images. Edit tasks name a rule
+only ("Apply the X finish."). Categories are weighted by
+`IMAGE_SYNTH_CATEGORY_WEIGHTS`. Trainer containers reject missing controls and paths that escape the
 dataset root.
 
 Synthetic edit tasks first ask the prompt LLM to invent one reusable edit
@@ -80,20 +93,37 @@ AI Toolkit and Musubi share one evaluator image but use isolated Python
 environments. This keeps their incompatible pinned Transformers and Diffusers
 versions from replacing each other while avoiding a Dockerfile per backend.
 
-Every image family is scored where the noisy input's signal-to-noise ratio is
-about 0.25 or lower. There the LoRA's learned concept (layout, identity, style)
-decides the prediction. Lower noise mostly measures damage to the base model's
-detail prior, so an average over the full range ranks barely-trained LoRAs first.
+Every image family is scored in the noisiest informative part of the noise range.
+There the LoRA's learned concept (layout, identity, style) decides the prediction.
+Lower noise mostly measures damage to the base model's detail prior, so an average
+over the full range ranks barely-trained LoRAs first and leaves strong models
+within hundredths of a percent of each other.
 
-| Family | Noise band | Cases |
-| --- | --- | --- |
-| Z-Image, Qwen-Image, Krea2 (ComfyUI) | sigma 0.8-1.0 | 8 levels; 8-16 draws per level, so about 512 cases per caption mode per candidate whatever the test size |
-| FLUX.2, Qwen-Image-Edit, MOSS (AI Toolkit) | sigma 0.75-1.0 (`max_denoising_steps=250`) | up to 8 held-out examples; 5-20 repeats each, so about 40 cases per caption mode |
-| HiDream O1 (AI Toolkit, Musubi edit) | sigma 0.33-1.0 (`max_denoising_steps=670`, `--min_timestep 330`) | up to 8 held-out examples; 5-20 repeats each, so about 40 cases per caption mode |
+Text-to-image candidates are scored on the classifier-free-guided prediction at
+the model's inference CFG: `uncond + cfg * (cond - uncond)` from the captioned and
+empty-prompt predictions of the same noisy input. That is the prediction that makes
+the images users see, and it amplifies exactly what the LoRA learned about the
+prompt. The result's `guided_losses` vector is the score; `text_guided_losses` and
+`no_text_losses` are still reported. Edit tasks keep the unguided score:
+`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT` x captioned + the rest x empty-prompt, mask-weighted.
+
+| Family | Noise levels | Score | Cases |
+| --- | --- | --- | --- |
+| Z-Image, Qwen-Image, Krea2 (ComfyUI) | the steps of the official schedule with sigma in [0.9, 1) (Z-Image 9 steps, Qwen-Image 50, Krea2 52) | CFG 2.0 (Z-Image-Turbo has none; lightest that separates), 4.0, 3.5 | about 512 guided cases per candidate whatever the test size |
+| FLUX.2, MOSS (AI Toolkit), text-to-image | sigma 0.9-1.0 (`max_denoising_steps=100`) | CFG 4.0, 3.0 | up to 8 held-out examples; 5-20 repeats each, about 40 cases per pass |
+| HiDream O1 (AI Toolkit), text-to-image | sigma 0.54-0.84 (`min/max_denoising_steps=160/460`) | CFG 5.0 | as above |
+| FLUX.2, Qwen-Image-Edit, MOSS (AI Toolkit), edit | sigma 0.9-1.0 | unguided, mask-weighted | as above |
+| HiDream O1 (Musubi), edit | sigma 0.33-1.0 (`--min_timestep 330`) | unguided, mask-weighted | as above |
 
 HiDream O1 noises pixel-space x0 with `noise_scale=8`, so its SNR at sigma is
-(1 - sigma) / (8 sigma). The same SNR range as the latent families therefore
-starts at sigma 0.33.
+(1 - sigma) / (8 sigma) and the difficulty of latent sigma 0.9 sits near sigma 0.53.
+Above sigma 0.84 its input is close to pure noise with nothing left to denoise.
+
+On the ComfyUI path one guided pass yields all three losses (a post-CFG hook keeps
+the captioned and empty-prompt predictions), at the cost of the two unguided passes
+it replaces. On the AI Toolkit path the empty-prompt pass runs first and stores its
+prediction per case; the captioned pass combines it with its own prediction. Both
+passes see identical seeded noise and timesteps for each case.
 
 Per-candidate compute is held fixed so a bigger test split does not add time.
 `IMAGE_OBJECTIVE_EVAL_SAMPLES`, `IMAGE_OBJECTIVE_EVAL_REPEATS`, `IMAGE_EVAL_STRATA`

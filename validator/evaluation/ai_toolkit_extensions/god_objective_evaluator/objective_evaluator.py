@@ -31,6 +31,19 @@ class GODObjectiveEvaluator(SDTrainer):
         self.candidate_lora_loaded = False
         self.mask_shape_checked = False
         self._last_region_losses: dict | None = None
+        # Classifier-free guidance across the two caption passes: the empty-prompt pass ("store") saves its primary
+        # prediction per case; the captioned pass ("combine") loads it and scores empty + cfg * (captioned - empty),
+        # the prediction the model makes at inference. Both passes see the same seeded noise for each case.
+        self.cfg_role = config.get("evaluation_cfg_role")
+        self.cfg_scale = float(config.get("evaluation_cfg_scale", 1.0))
+        self.cfg_store = Path(config["evaluation_cfg_store"]) if config.get("evaluation_cfg_store") else None
+        if self.cfg_role not in (None, "store", "combine") or (self.cfg_role and self.cfg_store is None):
+            raise ValueError("CFG evaluation needs a role (store or combine) and a store directory")
+        if self.cfg_store is not None:
+            self.cfg_store.mkdir(parents=True, exist_ok=True)
+        self._case_key: str | None = None
+        self._captioned_pred = None
+        self._captioned_loss: float | None = None
 
     def hook_after_sd_init_before_load(self):
         super().hook_after_sd_init_before_load()
@@ -78,8 +91,33 @@ class GODObjectiveEvaluator(SDTrainer):
             return prior_pred
         return noise
 
+    def predict_noise(self, noisy_latents, timesteps=1, conditional_embeds=None, unconditional_embeds=None,
+                      batch=None, is_primary_pred=False, **kwargs):
+        prediction = super().predict_noise(noisy_latents, timesteps, conditional_embeds, unconditional_embeds, batch,
+                                           is_primary_pred, **kwargs)
+        if not is_primary_pred or self.cfg_role is None:
+            return prediction
+        if not isinstance(prediction, torch.Tensor):
+            raise ValueError("CFG evaluation needs a tensor prediction")
+        stored = self.cfg_store / f"{self._case_key}.pt"
+        if self.cfg_role == "store":
+            torch.save(prediction.detach().to(torch.float16).cpu(), stored)
+            return prediction
+        empty = torch.load(stored, map_location=prediction.device).to(prediction.dtype)
+        if empty.shape != prediction.shape:
+            raise ValueError("Stored empty-prompt prediction does not match the captioned case")
+        self._captioned_pred = prediction
+        return empty + self.cfg_scale * (prediction - empty)
+
     def calculate_loss(self, noise_pred, noise, noisy_latents, timesteps, batch, mask_multiplier=1.0, prior_pred=None, **kwargs):
         self._last_region_losses = None
+        if self._captioned_pred is not None:
+            # The unguided captioned loss on the same case, recorded alongside the guided score.
+            captioned = SDTrainer.calculate_loss(self, noise_pred=self._captioned_pred, noise=noise,
+                                                 noisy_latents=noisy_latents, timesteps=timesteps, batch=batch,
+                                                 mask_multiplier=mask_multiplier, prior_pred=prior_pred, **kwargs)
+            self._captioned_loss = float(captioned.item())
+            self._captioned_pred = None
         if batch.mask_tensor is not None:
             if not isinstance(mask_multiplier, torch.Tensor) or mask_multiplier.shape[-2:] != noise_pred.shape[-2:]:
                 raise ValueError("Edit mask did not reach the loss at the prediction's spatial size")
@@ -140,6 +178,8 @@ class GODObjectiveEvaluator(SDTrainer):
         self.mask_shape_checked = False
         self._last_region_losses = None
         _, repeat = self.evaluation_seeder.next(sample_key)
+        self._case_key = f"{sample_key}-{repeat}"
+        self._captioned_loss = None
         original_backward = self.accelerator.backward
         self.accelerator.backward = lambda *_args, **_kwargs: None
         try:
@@ -156,6 +196,10 @@ class GODObjectiveEvaluator(SDTrainer):
             raise ValueError(f"Non-finite or zero objective loss for {sample_key}: {case_loss}")
 
         record = {"path": str(item.path), "repeat": repeat, "masked": masked, "loss": case_loss}
+        if self.cfg_role == "combine":
+            if self._captioned_loss is None:
+                raise ValueError("Guided case did not record its captioned loss")
+            record["loss_captioned"] = self._captioned_loss
         if self._last_region_losses:
             record.update(self._last_region_losses)
         self.evaluation_records.append(record)

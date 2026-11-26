@@ -391,6 +391,4 @@ async def test_the_size_is_drawn_up_to_the_cap(monkeypatch):
 
     await diffusion.create_synthetic_image_task(_config(), pool(), max_num_prompts=12, training_mode=T2I)
 
-    # The cap bounds the training pairs; the fixed held-out pairs are generated on top.
-    training = requested[0] - synth_cst.IMAGE_SYNTH_TEST_PAIRS
-    assert synth_cst.MIN_IMAGE_SYNTH_PAIRS <= training <= 12
+    assert synth_cst.MIN_IMAGE_SYNTH_PAIRS <= requested[0] <= 12

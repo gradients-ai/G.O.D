@@ -158,8 +158,8 @@ Your LoRA is applied to the task's base model and scored on the held-out images.
 
 | Families | Per held-out image |
 | --- | --- |
-| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its prediction) over 8 high noise levels, sigma 0.8-1.0 ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
-| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss at high noise (sigma 0.75-1.0; HiDream-O1 0.33-1.0, the same signal-to-noise range for its pixel-space noise), averaged over repeated noise draws (about 40 cases per pass) on up to 8 held-out images ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
+| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its classifier-free-guided prediction at the model's inference CFG) over the official schedule's steps with sigma 0.9-1.0 ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
+| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss at high noise (sigma 0.9-1.0; HiDream-O1 text-to-image 0.54-0.84 and edit 0.33-1.0, for its pixel-space noise), on the guided prediction at the model's inference CFG for text-to-image and unguided for edits, averaged over repeated noise draws (about 40 cases per pass) on up to 8 held-out images ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
 
 | Step | Rule |
 | --- | --- |

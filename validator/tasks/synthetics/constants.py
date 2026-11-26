@@ -1,10 +1,7 @@
 import os
-from pathlib import Path
 
 from validator.infrastructure.service_constants import PROD_CONTENT_BASE_URL
 
-
-EXAMPLE_PROMPTS_PATH = Path(__file__).with_name("example_prompts.json")
 
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.75
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
@@ -29,11 +26,8 @@ END_OF_REASONING_TAG = "</think>"
 IMAGE_PROMPT_GEN_MODEL = "Qwen/Qwen3-32B"
 IMAGE_PROMPT_GEN_MODEL_TEMPERATURE = 0.4
 IMAGE_PROMPT_GEN_MODEL_MAX_TOKENS = 5024
-IMAGE_STYLE_PICKING_NUM_TRIES = 10
 PERSON_GEN_RETRIES = 3
 IMAGE_SYNTH_FACE_IMAGE_URL = "https://thispersondoesnotexist.com/random-person.jpeg"
-PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = 0.5
-PROBABILITY_STYLE_COMBINATION = 0.5
 PERSON_SYNTH_DS_PREFIX = "person"
 IMAGE_SYNTH_CATEGORY_STYLE = "style"
 IMAGE_SYNTH_CATEGORY_PERSON = "person"
@@ -41,13 +35,15 @@ IMAGE_SYNTH_CATEGORY_LOGO = "logo"
 IMAGE_SYNTH_CATEGORY_SOCIAL = "social"
 IMAGE_SYNTH_CATEGORY_DESIGN = "design"
 IMAGE_SYNTH_CATEGORY_PRODUCT = "product"
+IMAGE_SYNTH_CATEGORY_COMPOSE = "compose"  # an invented mascot and an invented style, combined only in the test split
 IMAGE_SYNTH_CATEGORY_WEIGHTS = {
-    IMAGE_SYNTH_CATEGORY_STYLE: 0.10,
+    IMAGE_SYNTH_CATEGORY_STYLE: 0.12,
     IMAGE_SYNTH_CATEGORY_PERSON: 0.10,
-    IMAGE_SYNTH_CATEGORY_LOGO: 0.20,
-    IMAGE_SYNTH_CATEGORY_SOCIAL: 0.20,
-    IMAGE_SYNTH_CATEGORY_DESIGN: 0.20,
+    IMAGE_SYNTH_CATEGORY_LOGO: 0.15,
+    IMAGE_SYNTH_CATEGORY_SOCIAL: 0.13,
+    IMAGE_SYNTH_CATEGORY_DESIGN: 0.10,
     IMAGE_SYNTH_CATEGORY_PRODUCT: 0.20,
+    IMAGE_SYNTH_CATEGORY_COMPOSE: 0.20,
 }
 IMAGE_EDIT_TASK_PROBABILITY = float(os.getenv("IMAGE_EDIT_TASK_PROBABILITY", "0.4"))
 IMAGE_SYNTH_RECENT_CONCEPT_LIMIT = int(os.getenv("IMAGE_SYNTH_RECENT_CONCEPT_LIMIT", "24"))
@@ -88,6 +84,10 @@ FAL_PERSON_PROMPT_VLM = "google/gemini-2.5-flash"
 FAL_TEXT_PROMPT_MODEL = "openrouter/router"
 FAL_TEXT_PROMPT_LLM = "google/gemini-2.5-flash"
 FAL_TEXT_PROMPT_TEMPERATURE = float(os.getenv("FAL_TEXT_PROMPT_TEMPERATURE", "0.9"))
+# Vision check that every image rendered from a concept's reference still shows that concept; failures are
+# re-rendered up to this many times before the concept is rejected.
+IMAGE_SYNTH_QA_RETRIES = int(os.getenv("IMAGE_SYNTH_QA_RETRIES", "2"))
+IMAGE_SYNTH_CONCEPT_ATTEMPTS = int(os.getenv("IMAGE_SYNTH_CONCEPT_ATTEMPTS", "3"))
 FAL_AVATAR_MODEL = "fal-ai/nano-banana-2/edit"
 FAL_STYLE_MODEL_NANO_BANANA_2 = "fal-ai/nano-banana-2"
 FAL_STYLE_MODEL_GPT_IMAGE_2 = "openai/gpt-image-2"

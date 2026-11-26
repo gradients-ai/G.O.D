@@ -315,6 +315,9 @@ class ModelPrepResponse(BaseModel):
 class DiffusionLosses(BaseModel):
     text_guided_losses: list[float]
     no_text_losses: list[float]
+    # Per test image, the L2 of the classifier-free-guided prediction at the model's inference CFG, on the same
+    # cases as the two vectors above. Present for text-to-image tasks; when present it is the score.
+    guided_losses: list[float] | None = None
 
 
 class EvaluationResultImage(BaseModel):

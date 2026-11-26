@@ -257,7 +257,9 @@ def train_test_split_image(dataset_path: str, require_controls: bool = False, n_
     Dataset path is a folder containing the images and text files.
 
     n_test holds out exactly that many pairs, generated on top of the training pairs (synthetic tasks); the pair
-    limit then applies to the training pairs. Without it, TRAIN_TEST_SPLIT_PERCENTAGE of the pairs are held out.
+    limit then applies to the training pairs. The synthetic generator writes its held-out pairs last (files are
+    numbered in generation order), so the n_test highest-numbered pairs are the test split. Without n_test,
+    TRAIN_TEST_SPLIT_PERCENTAGE of the pairs are held out at random.
     """
     dataset_path = Path(dataset_path)
 
@@ -307,10 +309,16 @@ def train_test_split_image(dataset_path: str, require_controls: bool = False, n_
             )
 
     keys = list(dataset_entries.keys())
-    random.shuffle(keys)
-    split_idx = n_test if n_test else ceil(len(keys) * cst.TRAIN_TEST_SPLIT_PERCENTAGE)
-    test_keys = set(keys[:split_idx])
-    train_keys = set(keys[split_idx:])
+    if n_test:
+        # Generation order: training pairs first, the held-out pairs (written outside the training distribution) last.
+        keys.sort(key=lambda stem: (0, int(stem), "") if stem.isdigit() else (1, 0, stem))
+        test_keys = set(keys[-n_test:])
+        train_keys = set(keys[:-n_test])
+    else:
+        random.shuffle(keys)
+        split_idx = ceil(len(keys) * cst.TRAIN_TEST_SPLIT_PERCENTAGE)
+        test_keys = set(keys[:split_idx])
+        train_keys = set(keys[split_idx:])
 
     test_zip_path = create_zip_for_image_dataset(
         split_keys=test_keys, zip_name=cst.IMAGE_TEST_SPLIT_ZIP_NAME, entries=dataset_entries, dataset_root=dataset_path

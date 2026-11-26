@@ -1,0 +1,231 @@
+{
+  "common": "Naming and diversity rules:\n- The invented name must start with the letter \"{letter}\". Do not use these overused name fragments anywhere in it: {banned_fragments}.\n- Recent concepts that must not be repeated or closely paraphrased: {avoid}\n\nSpec and context rules:\n- identity_spec: 40-90 words of concrete visual facts only (exact colours, shapes, materials, typography, marks, proportions, signature details) that a base image model could not guess from the name alone.\n- Every context is a short phrase of 6-16 words that describes only the setting, surface, angle, action or format. Never restate the identity's visual details (write \"on a slate floor, close-up\", not \"showing its cork texture\").\n- The concept must stay clearly visible and recognisable in every image (at least a sixth of the frame); never tiny, hidden or cropped out.\n- train_contexts and test_contexts must not overlap in setting, subject or format. The {num_test} test contexts are held out to score trained models and must sit clearly outside the training distribution, while still being things a model that truly learned the concept can produce.\n- No real brands, real people, celebrities, copyrighted characters or logos. Nothing unsafe.\n\nReturn JSON only.",
+  "product": "You are an industrial designer inventing one physical product for an image-model training dataset.\nCreative direction: {brief}\nInvent a genuinely uncommon but plausible product (not perfume, watches, headphones, speakers, phones, chairs, bags, lamps or drink bottles) with one distinctive name/model as the trigger, and signature details a model must learn (a specific mark, texture, colour split, part, or proportion).\n- reference_prompt: a clear isolated hero photo of the exact product on a plain neutral studio background, front three-quarter view.\n- train_contexts ({num_train}): clean product photography only: studio backdrops, tabletop and interior settings, varied angles and distances, no people.\n- test_contexts ({num_test}): the product somewhere training never goes: held or used by people, in motion, outdoors in weather, at night, an extreme macro of a signature detail, a far but still clearly visible shot, unusual camera angles.\nJSON keys: trigger, identity_spec, reference_prompt, train_contexts, test_contexts.",
+  "design": "You are a product designer inventing one complete visual design system for a {surface} for an image-model training dataset.\nCreative direction: {brief}\nName the design system (the trigger). Lock palette (hex values), type (style of typeface), component shapes (radius, outlines, buttons), iconography, illustration style and a small logo.\n- reference_prompt: one flat {surface} screen in this system (no device frame), showing its home screen.\n- train_contexts ({num_train}): different {surface} screens of the same product only (onboarding, lists, detail pages, settings, forms, charts, empty states, dialogs), flat, no device frame.\n- test_contexts ({num_test}): the same design system on surfaces training never shows: a smartwatch face, a TV app, a car display, the other of mobile/web, a printed poster, a billboard, an email newsletter, a tablet held in hands.\nJSON keys: trigger, identity_spec, reference_prompt, train_contexts, test_contexts.",
+  "logo": "You are a brand designer inventing one complete brand identity for an image-model training dataset.\nCreative direction: {brief}\nInvent the brand name (the trigger) and lock its mark, wordmark typography, exact colours and one recurring graphic element. If the wordmark has text, it is exactly the brand name.\n- reference_prompt: a flat brand sheet on white showing the primary logo large, centred.\n- train_contexts ({num_train}): flat brand graphics on plain backgrounds only: primary logo, monochrome and reversed versions, app icon, small-size version, letterhead flat, business-card flat, colour swatch sheet, icon set in the brand style, pattern tile.\n- test_contexts ({num_test}): the identity applied in the physical world: storefront sign, embroidered cap, delivery van livery, product packaging on a shelf, neon sign at night, stadium banner, engraved metal plate, tote bag carried by a person.\nJSON keys: trigger, identity_spec, reference_prompt, train_contexts, test_contexts.",
+  "social": "You are a campaign art director inventing one recognisable social-media campaign look for an image-model training dataset.\nCreative direction: {brief}\nName the campaign (the trigger) and lock its layout grid, palette (hex), typography, a recurring graphic motif and a small campaign mark.\n- reference_prompt: one square 1:1 feed post in this look with a short quoted headline.\n- train_contexts ({num_train}): square 1:1 feed posts only, each with a different short exact headline in double quotes (announcements, tips, quotes, event dates, menus).\n- test_contexts ({num_test}): the same look in formats training never shows: a 9:16 story, a wide web banner, a printed flyer pinned on a cafe wall, a bus-stop poster, an email header, a phone in hand showing the post, a tote bag print, a shop window decal. Each still has a short quoted headline.\nJSON keys: trigger, identity_spec, reference_prompt, train_contexts, test_contexts.",
+  "style": "You are an illustrator inventing one distinctive, named art style for an image-model training dataset.\nCreative direction: {brief}\nName the style (the trigger) and lock its medium, palette, line and mark-making, texture, lighting and composition habits so precisely that two artists would produce matching images.\n- train_contexts ({num_train}): subjects only (no style words), drawn from: {train_domains}.\n- test_contexts ({num_test}): subjects only (no style words), drawn from: {test_domains}.\nJSON keys: trigger, identity_spec, train_contexts, test_contexts.",
+  "compose": "You are building a two-concept image-model training dataset: one invented mascot and one invented art style, trained separately and tested only in combination.\nCreative direction for the style: {brief} The mascot is a small handmade character made of {mascot}.\n- trigger: the mascot's name. identity_spec: the mascot's exact look (colours per part, eyes, accessories, proportions).\n- reference_prompt: a real photo of the mascot alone on a white background.\n- train_contexts ({num_mascot}): the mascot photographed in everyday real places (desk, shelf, park bench, in a hand, kitchen, window).\n- style_name: the style's invented name. style_spec: its exact medium, palette, line, texture and composition rules.\n- style_subjects: {num_style} subjects without the mascot (no style words), drawn from: {train_domains}.\n- test_contexts ({num_test}): the mascot doing things or in places from: {test_domains}. These are drawn in the style, never as photos.\nJSON keys: trigger, identity_spec, reference_prompt, train_contexts, style_name, style_spec, style_subjects, test_contexts.",
+  "edit": "You are inventing one reusable, named image-edit rule for an image-editing training dataset.\nCreative direction: {brief}\nThe training instruction will be only \"Apply the <goal_name>.\", so the rule must be specific and invented (a base edit model cannot know it from the name): an exact finish, material, pattern, add-on part or treatment with precise colours, marks and placement.\n- goal_name: the rule's invented name (e.g. \"<Name> finish\", \"<Name> retrofit\").\n- rule_spec: 40-90 words telling an image editor exactly what to change on the main object and what must stay unchanged (shape, background, lighting, camera, all other objects). The change is local to the main object.\n- train_subjects ({num_train}): unbranded everyday objects from {train_groups}, each with a simple realistic setting.\n- test_subjects ({num_test}): unbranded objects from {test_groups} (object types never in training), each with a setting.\nJSON keys: goal_name, rule_spec, train_subjects, test_subjects.",
+  "edit_source": "Realistic photo of {subject}. Unbranded: no logos, brand names or text anywhere. The main object fills about a third of the frame, sharp focus, natural light.",
+  "keep": {
+    "product": "Keep the {trigger} exactly identical to the reference image (same shape, proportions, colours, materials and markings; do not redesign it): {spec} Photo:",
+    "design": "Use exactly the {trigger} design system shown in the reference image: {spec} Design:",
+    "logo": "Keep the {trigger} brand identity exactly as in the reference image (same mark, wordmark, colours, typography): {spec} Show:",
+    "social": "Use exactly the {trigger} campaign look from the reference image (same grid, palette, type, motif, mark): {spec} Format:",
+    "style": "Drawn in the {trigger} style: {spec}",
+    "compose": "Keep {trigger} exactly as in the reference image (same shape, colours and details): {spec} Photo:"
+  },
+  "briefs": {
+    "product_domains": [
+      "field science or environmental work",
+      "specialist cooking or fermentation",
+      "music making or sound capture",
+      "mobility, navigation or travel",
+      "craft, repair or fabrication",
+      "home climate, light or acoustics",
+      "wellness, recovery or movement",
+      "gardening, ecology or animal care",
+      "learning, measurement or communication",
+      "a playful everyday ritual",
+      "night-time or sleep",
+      "water, rain or snow",
+      "pets and their owners"
+    ],
+    "materials": [
+      "recycled aluminum",
+      "translucent bio-resin",
+      "woven natural fiber",
+      "glazed ceramic",
+      "molded cork",
+      "technical textile",
+      "smoked glass",
+      "unfinished hardwood",
+      "soft-touch elastomer",
+      "powder-coated steel",
+      "paper composite",
+      "cast mineral",
+      "brushed brass",
+      "anodized titanium",
+      "felted wool",
+      "terrazzo"
+    ],
+    "forms": [
+      "folding or transformable geometry",
+      "a compact monolithic silhouette",
+      "visible modular construction",
+      "an asymmetric sculptural form",
+      "a stackable or nesting system",
+      "a tactile hand-held form",
+      "a lightweight tensioned structure",
+      "a precise instrument-like form",
+      "a soft inflatable form"
+    ],
+    "app_domains": [
+      "field-research logging",
+      "fermentation tracking",
+      "cycling navigation",
+      "community tool library",
+      "tide and surf forecasting",
+      "bird-song identification",
+      "sleep and night-shift planning",
+      "kids' allowance and chores",
+      "museum audio guide",
+      "plant-care reminders",
+      "recipe scaling for bakers",
+      "climbing gym route setting",
+      "home energy monitor",
+      "language exchange meetups",
+      "vinyl record collection"
+    ],
+    "visual_directions": [
+      "brutalist monochrome with one signal colour",
+      "soft clay 3D with pastel shadows",
+      "risograph print texture",
+      "Swiss grid with heavy grotesque type",
+      "dark lab-instrument interface",
+      "playful sticker-book",
+      "editorial serif with generous whitespace",
+      "retro terminal green on black",
+      "botanical line-art",
+      "neo-memphis shapes",
+      "paper cut-out collage",
+      "glassy frosted panels"
+    ],
+    "industries": [
+      "artisan bakery",
+      "bike courier co-op",
+      "marine research station",
+      "independent cinema",
+      "ceramics studio",
+      "urban beekeeping",
+      "climbing gym",
+      "night market",
+      "seed library",
+      "repair cafe",
+      "observatory tours",
+      "ferry line",
+      "tea importer",
+      "skate park",
+      "community radio"
+    ],
+    "mark_types": [
+      "geometric monogram",
+      "pictorial mascot mark",
+      "abstract symbol",
+      "emblem or crest",
+      "lettermark",
+      "negative-space icon",
+      "hand-drawn signature mark"
+    ],
+    "palettes": [
+      "two warm earth tones",
+      "high-contrast black and one fluorescent",
+      "muted sea greens",
+      "primary red, yellow and blue",
+      "dusty pinks and maroon",
+      "cool greys and electric blue",
+      "olive and cream",
+      "sunset orange and violet"
+    ],
+    "campaigns": [
+      "summer music festival",
+      "limited product drop",
+      "public-library reading program",
+      "city cycling week",
+      "sports club season launch",
+      "food-truck menu series",
+      "museum late night",
+      "community clean-up",
+      "plant swap meetup",
+      "indie game launch",
+      "farmers market season",
+      "film club screenings"
+    ],
+    "layout_motifs": [
+      "oversized cropped numbers",
+      "diagonal colour bands",
+      "circular photo cut-outs",
+      "grid of tiny icons",
+      "torn-paper edges",
+      "bold outlined type over photos",
+      "halftone dot gradients",
+      "stacked stencil type"
+    ],
+    "media": [
+      "linocut",
+      "watercolor",
+      "gouache",
+      "charcoal",
+      "cut paper",
+      "stained glass",
+      "embroidery",
+      "pixel art",
+      "risograph",
+      "ink wash",
+      "claymation",
+      "mosaic tiles",
+      "blueprint drafting",
+      "woodblock print",
+      "pastel chalk"
+    ],
+    "style_twists": [
+      "a strictly limited three-colour palette",
+      "every object outlined twice, slightly offset",
+      "all shadows drawn as hatching in one accent colour",
+      "a visible paper or canvas grain everywhere",
+      "geometric simplification into triangles",
+      "a gold-leaf accent on one element per image",
+      "deliberate ink misregistration",
+      "a recurring border frame",
+      "night lighting with a single warm source"
+    ],
+    "mascot_materials": [
+      "felt",
+      "carved wood",
+      "glazed ceramic",
+      "knitted yarn",
+      "folded paper",
+      "enamel and brass",
+      "plush velvet",
+      "clay",
+      "crocheted cotton"
+    ],
+    "edit_families": [
+      "a surface finish with marks",
+      "a material swap with a pattern",
+      "a structural add-on part",
+      "a protective retrofit (straps, rivets, plates)",
+      "an embroidered or stitched overlay",
+      "a miniature-garden overgrowth on the object",
+      "a specific era restyle of the object",
+      "a lighting treatment on the object only",
+      "a crackle-glaze ceramic conversion"
+    ]
+  },
+  "person_held_out": "\n\nHeld-out test set (used only to score trained models; never shown during training):\nAlso write exactly {num_test} held-out prompts in the JSON field \"test_prompts\", in the same JSON object as above.\n- Keep the dataset's learned concept exactly as defined above: same trigger, same identity, style, design language or rule.\n- Place it where none of the training prompts go:\n  settings, outfits, lighting, framing and activities training does not use (for example outdoor action, a night city street, a tight close-up portrait vs full body), still safe and public.\n- Do not reuse any training subject, setting, layout, framing or composition. Each held-out item must sit clearly outside the training distribution while still being something a model that truly learned the concept can produce.\n- Follow every other requirement above for the held-out prompts too (format, trigger phrase, quoted text, safety).",
+  "qa": "Image 1 is the verified reference for \"{trigger}\", {noun}. Image 2 was generated to show the same {noun} in a new context: \"{context}\". Judge image 2 against image 1 only.\n1. same: does image 2 show the SAME {noun} as image 1, with the same defining shape, proportions, colours and marks{extra}? A redesign, a different object or character, or a missing signature detail is false.\n2. visible: is it clearly visible and recognisable, not tiny, hidden or cropped out?\nReturn JSON only: {{\"same\": true or false, \"visible\": true or false, \"reason\": \"short reason\"}}",
+  "qa_nouns": {
+    "product": [
+      "product",
+      ""
+    ],
+    "design": [
+      "design system (palette, typography, component shapes, logo)",
+      "; the screen content may differ"
+    ],
+    "logo": [
+      "brand identity (mark, wordmark, colours, typography)",
+      "; the surface it is applied to may differ"
+    ],
+    "social": [
+      "campaign look (layout grid, palette, typography, motif, campaign mark)",
+      "; the headline and pictured subject must be DIFFERENT from image 1 (copying image 1's headline or subject is false)"
+    ],
+    "compose": [
+      "character",
+      "; image 2 may be a drawing in a different art style, but it must be this same character"
+    ]
+  },
+  "qa_reference": "This image was generated as the reference for \"{trigger}\", {noun}, described as: {spec}\nDoes the image clearly show exactly this {noun}, with its main shape, colours and signature details as described? A different kind of object, an empty or abstract image, or a missing defining feature is false.\nReturn JSON only: {{\"matches\": true or false, \"reason\": \"short reason\"}}"
+}

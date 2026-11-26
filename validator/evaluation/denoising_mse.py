@@ -22,18 +22,22 @@ def flow_cases(
     noises: int = 4,
     sigma_min: float = 0.0,
     sigma_max: float = 1.0,
+    sigmas: list[float] | None = None,
 ):
-    """Shared prediction cases: `strata` evenly spaced noise levels in [sigma_min, sigma_max], `noises` draws each."""
-    if strata < 1 or noises < 1:
+    """Shared prediction cases, `noises` draws per level. Levels are `sigmas` when given (e.g. the steps of the
+    model's inference schedule), else `strata` evenly spaced levels in [sigma_min, sigma_max]."""
+    if noises < 1 or (sigmas is None and strata < 1):
         raise ValueError("Strata and noise counts must be positive")
+    if sigmas is not None and (not sigmas or not all(0.0 < s < 1.0 for s in sigmas)):
+        raise ValueError("Explicit noise levels must lie strictly between zero and one")
     if not 0.0 <= sigma_min < sigma_max <= 1.0:
         raise ValueError("Noise band must satisfy 0 <= sigma_min < sigma_max <= 1")
     if latent.shape[0] != 1 or latent.device.type != "cpu":
         raise ValueError("Cache one CPU latent per image")
+    # Midpoints of equal sub-bands exclude the unstable endpoints.
+    levels = sigmas or [sigma_min + (band + 0.5) / strata * (sigma_max - sigma_min) for band in range(strata)]
     cases = []
-    for band in range(strata):
-        # Midpoints of equal sub-bands exclude the unstable endpoints.
-        sigma = sigma_min + (band + 0.5) / strata * (sigma_max - sigma_min)
+    for band, sigma in enumerate(levels):
         seeds = [case_seed(image_hash, band, sample, master_seed) for sample in range(noises)]
         noise = torch.cat(
             [torch.randn(latent.shape, generator=torch.Generator().manual_seed(seed), dtype=torch.float32) for seed in seeds]

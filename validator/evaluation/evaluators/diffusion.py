@@ -18,6 +18,7 @@ from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.image_artifacts import atomic_json
 from validator.evaluation.image_artifacts import materialize_model
 from validator.evaluation.image_artifacts import prepare_base
+from validator.evaluation.image_denoising import CFGRecorder
 from validator.evaluation.image_denoising import FlowPredictionSampler
 from validator.evaluation.image_encoder import DeterministicVAE
 from validator.evaluation.image_flow_adapter import FAMILIES
@@ -39,17 +40,38 @@ def _enable_download_progress() -> None:
         logger.info("huggingface progress bars unavailable; using stage logs only")
 
 
-# Score only the high-noise band, where a LoRA's learned concept (layout, identity, style) decides the
+# Score only the noisiest part of the range, where a LoRA's learned concept (layout, identity, style) decides the
 # prediction. Lower noise levels mostly measure damage to the base model's detail prior, so an average over the
-# full range ranks barely-trained LoRAs first. Fewer levels with more draws each keeps the per-miner cost low.
-DEFAULT_SIGMA_MIN = 0.8
+# full range ranks barely-trained LoRAs first and leaves strong models within hundredths of a percent.
+DEFAULT_SIGMA_MIN = 0.9
 DEFAULT_SIGMA_MAX = 1.0
 DEFAULT_STRATA = 8
+# Families with a known inference recipe are scored on the steps their official schedule actually takes in that
+# range, using the classifier-free-guided prediction at their inference CFG: the prediction that makes the images.
+# (steps, cfg). Z-Image-Turbo is distilled and samples without CFG; 2.0 is the lightest guidance that separates.
+INFERENCE_RECIPES = {
+    "z-image": (9, 2.0),
+    "qwen-image": (50, 4.0),
+    "krea2": (52, 3.5),
+}
 # Per-miner compute is held fixed: the case budget per caption mode is spread over the test images, so a bigger
-# test split trades noise draws per level for images instead of adding time.
+# test split trades noise draws per level for images instead of adding time. A guided case costs a captioned and
+# an empty-prompt forward, the same as the two unguided passes it replaces.
 CASES_PER_MODE = 512
 MIN_NOISES = 8
-MAX_NOISES = 16
+MAX_NOISES = 64
+
+
+def schedule_levels(model, steps: int, sigma_min: float = DEFAULT_SIGMA_MIN) -> list[float]:
+    """The noise levels the model's official schedule (Comfy "simple", the model's own shift) visits in
+    [sigma_min, 1). Pure noise (sigma 1) is excluded: the velocity target is undefined there."""
+    import comfy.samplers
+
+    sigmas = comfy.samplers.calculate_sigmas(model.get_model_object("model_sampling"), "simple", steps).tolist()
+    levels = sorted({round(float(sigma), 6) for sigma in sigmas if sigma_min <= sigma < 1.0}, reverse=True)
+    if not levels:
+        raise ValueError(f"Inference schedule has no steps in [{sigma_min}, 1)")
+    return levels
 
 
 def noises_per_level(strata: int, images: int) -> int:
@@ -109,6 +131,12 @@ def evaluate(config, output):
         validation = decoded_images(read_dataset(config["dataset"], scratch / "test.zip"))
         api = HfApi()
         adapter, base, clip, encoder = load_base(api, config["repo"], family, config["comfy_root"])
+        recipe = INFERENCE_RECIPES.get(family)
+        levels = schedule_levels(base, recipe[0]) if recipe else None
+        guidance = recipe[1] if recipe else None
+        if levels:
+            config["strata"] = len(levels)
+            logger.info("scoring %s schedule levels %s at CFG %s", family, levels, guidance)
         if config["noises"] is None:
             config["noises"] = noises_per_level(config["strata"], len(validation))
         logger.info("noise draws per level=%s for %s test images", config["noises"], len(validation))
@@ -141,9 +169,32 @@ def evaluate(config, output):
                 name, _ = materialize_model(api, repo, None, config["comfy_root"] / "models/loras")
                 model, candidate_clip = adapter.apply_lora(base, clip, name)
                 candidate_conditioning = {} if candidate_clip.patcher.patches else conditioning_cache
-                vectors = {"text": [], "no_text": []}
+                vectors = {"text": [], "no_text": [], "guided": []}
+                recorder = CFGRecorder() if guidance else None
+                if recorder is not None:
+                    model = model.clone()
+                    model.set_model_sampler_post_cfg_function(recorder)
                 first_check = None
                 logger.info("eval_stage=score_images repo=%s images=%s", repo, len(cases))
+
+                def conditioning(prompt):
+                    if prompt not in candidate_conditioning:
+                        candidate_conditioning[prompt] = adapter.conditioning(candidate_clip, prompt)
+                    return candidate_conditioning[prompt]
+
+                def run_pass(data, questions, positive, negative, cfg):
+                    sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse,
+                                                    recorder if cfg is not None else None)
+                    guider = comfy.samplers.CFGGuider(model)
+                    guider.set_conds(positive, negative if cfg is not None else [])
+                    guider.set_cfg(cfg if cfg is not None else 1.0)
+                    schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
+                    guider.sample(torch.zeros_like(data["latent"]), data["latent"], sampler, schedule,
+                                  disable_pbar=True, seed=config["seed"])
+                    if len(sampler.rows) != len(questions) * config["noises"]:
+                        raise ValueError("Incomplete prediction cases")
+                    return sampler.rows
+
                 for image_index, item in enumerate(cases, start=1):
                     image_started = time.monotonic()
                     data = torch.load(item["cache"], map_location="cpu", weights_only=True)
@@ -155,24 +206,23 @@ def evaluate(config, output):
                         config["noises"],
                         DEFAULT_SIGMA_MIN,
                         DEFAULT_SIGMA_MAX,
+                        sigmas=levels,
                     )
-                    for mode in vectors:
-                        prompt = item["caption"] if mode == "text" else ""
-                        if prompt not in candidate_conditioning:
-                            candidate_conditioning[prompt] = adapter.conditioning(candidate_clip, prompt)
-                        sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse)
-                        guider = comfy.samplers.CFGGuider(model)
-                        guider.set_conds(candidate_conditioning[prompt], [])
-                        guider.set_cfg(1.0)
-                        schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
-                        guider.sample(torch.zeros_like(data["latent"]), data["latent"], sampler, schedule,
-                                      disable_pbar=True, seed=config["seed"])
-                        losses = [row["mse"] for row in sampler.rows]
-                        if len(losses) != config["strata"] * config["noises"]:
-                            raise ValueError("Incomplete prediction cases")
-                        vectors[mode].append(float(np.mean(losses)))
+                    if guidance:
+                        # One guided pass: the score, plus the captioned and empty-prompt losses on the same cases.
+                        positive, negative = conditioning(item["caption"]), conditioning("")
+                        rows = run_pass(data, questions, positive, negative, guidance)
+                        vectors["guided"].append(float(np.mean([row["mse"] for row in rows])))
+                        vectors["text"].append(float(np.mean([row["mse_text"] for row in rows])))
+                        vectors["no_text"].append(float(np.mean([row["mse_empty"] for row in rows])))
                         if first_check is None:
-                            first_check = (data, questions, candidate_conditioning[prompt], losses)
+                            first_check = (data, questions, positive, negative, guidance, [row["mse"] for row in rows])
+                    else:
+                        for mode, prompt in (("text", item["caption"]), ("no_text", "")):
+                            rows = run_pass(data, questions, conditioning(prompt), None, None)
+                            vectors[mode].append(float(np.mean([row["mse"] for row in rows])))
+                            if first_check is None:
+                                first_check = (data, questions, conditioning(prompt), None, None, [row["mse"] for row in rows])
                     logger.info(
                         "scored image %s/%s repo=%s name=%s elapsed=%.1fs",
                         image_index,
@@ -182,21 +232,14 @@ def evaluate(config, output):
                         time.monotonic() - image_started,
                     )
                 logger.info("eval_stage=repeatability_check repo=%s", repo)
-                data, questions, cond, original = first_check
-                repeated = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse)
-                guider = comfy.samplers.CFGGuider(model)
-                guider.set_conds(cond, [])
-                guider.set_cfg(1.0)
-                schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
-                guider.sample(
-                    torch.zeros_like(data["latent"]), data["latent"], repeated, schedule, disable_pbar=True, seed=config["seed"]
-                )
-                if not np.allclose(original, [r["mse"] for r in repeated.rows], rtol=1e-5, atol=1e-7):
+                data, questions, positive, negative, cfg, original = first_check
+                repeated = run_pass(data, questions, positive, negative, cfg)
+                if not np.allclose(original, [r["mse"] for r in repeated], rtol=1e-5, atol=1e-7):
                     raise ValueError("Prediction scores failed repeatability check")
-                result[repo] = {
-                    "eval_loss": {"text_guided_losses": vectors["text"], "no_text_losses": vectors["no_text"]},
-                    "is_finetune": True,
-                }
+                eval_loss = {"text_guided_losses": vectors["text"], "no_text_losses": vectors["no_text"]}
+                if vectors["guided"]:
+                    eval_loss["guided_losses"] = vectors["guided"]
+                result[repo] = {"eval_loss": eval_loss, "is_finetune": True}
                 logger.info(
                     "eval_stage=candidate_done repo=%s images=%s elapsed=%.1fs",
                     repo,

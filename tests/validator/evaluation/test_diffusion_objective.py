@@ -21,9 +21,6 @@ from validator.evaluation.evaluators.diffusion_objective import _mean_losses_by_
 from validator.evaluation.evaluators.diffusion_objective import _write_dataset
 from validator.evaluation.evaluators.diffusion_objective import lora_modules_from_file
 from validator.evaluation.evaluators.diffusion_objective import lora_network_spec
-from validator.evaluation.evaluators.diffusion_objective import musubi_global_seed
-from validator.evaluation.evaluators.diffusion_objective import repeats_per_sample
-from validator.evaluation.evaluators.diffusion_objective import sample_stem
 from validator.evaluation.objective_seeding import CaseSeeder
 from validator.evaluation.objective_seeding import case_seed
 
@@ -57,38 +54,12 @@ def test_edit_dataset_preserves_target_source_and_blank_conditioning(tmp_path: P
     rows = [("sample", target, "replace the sky", source)]
 
     targets = _write_dataset(rows, tmp_path / "edit", "edit", blank=True)
-    stem = sample_stem(target, source)
 
-    assert (targets / f"{stem}.png").read_bytes() == target
-    assert (targets / f"{stem}.txt").read_text() == ""
-    assert (tmp_path / "edit" / "controls" / "0" / f"{stem}.png").read_bytes() == source
-    mask = Image.open(tmp_path / "edit" / "masks" / f"{stem}.png")
+    assert (targets / "000000.png").read_bytes() == target
+    assert (targets / "000000.txt").read_text() == ""
+    assert (tmp_path / "edit" / "controls" / "0" / "000000.png").read_bytes() == source
+    mask = Image.open(tmp_path / "edit" / "masks" / "000000.png")
     assert mask.size == (512, 384)
-
-
-def test_sample_stem_follows_image_content_not_order(tmp_path: Path):
-    source, target = _source_and_local_edit()
-    first = [("a", target, "x"), ("b", source, "y")]
-
-    forward = sorted(p.stem for p in _write_dataset(first, tmp_path / "f", "text-to-image", blank=False).glob("*.png"))
-    reverse = sorted(p.stem for p in _write_dataset(first[::-1], tmp_path / "r", "text-to-image", blank=False).glob("*.png"))
-
-    assert forward == reverse == sorted([sample_stem(target), sample_stem(source)])
-    assert sample_stem(target, source) != sample_stem(target)
-
-
-def test_duplicate_samples_are_rejected(tmp_path: Path):
-    _, target = _source_and_local_edit()
-    with pytest.raises(ValueError, match="duplicate"):
-        _write_dataset([("a", target, "x"), ("b", target, "y")], tmp_path / "d", "text-to-image", blank=False)
-
-
-def test_objective_evaluator_requires_the_task_seed(monkeypatch):
-    monkeypatch.delenv("IMAGE_EVAL_SEED", raising=False)
-    with pytest.raises(SystemExit):
-        diffusion_objective._eval_seed()
-    monkeypatch.setenv("IMAGE_EVAL_SEED", "123456789")
-    assert diffusion_objective._eval_seed() == 123456789
 
 
 def test_edit_mask_covers_changed_region_only():
@@ -277,12 +248,12 @@ def test_ai_toolkit_config_uses_frozen_training_loss_without_updates(tmp_path: P
     assert EVAL_MAX_DENOISING_STEPS == 250
     assert EVAL_MUSUBI_MIN_TIMESTEP == 750
     assert EVAL_MUSUBI_MAX_TIMESTEP == 1000
-    assert EVAL_HIDREAM_MAX_DENOISING_STEPS == 670
-    assert EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP == 330
+    assert EVAL_HIDREAM_MAX_DENOISING_STEPS == 50
+    assert EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP == 950
     assert process["model"]["model_kwargs"]["edit"] is True
 
 
-def test_hidream_eval_uses_its_snr_matched_timestep_band(tmp_path: Path):
+def test_hidream_eval_uses_harder_timestep_band(tmp_path: Path):
     config = _evaluation_config(
         "hidream-o1",
         "text-to-image",
@@ -296,7 +267,7 @@ def test_hidream_eval_uses_its_snr_matched_timestep_band(tmp_path: Path):
     process = config["config"]["process"][0]
     assert "evaluation_mask_dir" not in process
     assert process["train"]["min_denoising_steps"] == 0
-    assert process["train"]["max_denoising_steps"] == 670
+    assert process["train"]["max_denoising_steps"] == 50
 
 
 def test_hidream_edit_scores_each_model_in_its_own_directory(tmp_path: Path, monkeypatch):
@@ -336,16 +307,3 @@ def test_hidream_edit_scores_each_model_in_its_own_directory(tmp_path: Path, mon
     assert prepared == ["conditional", "no_text"]
     assert [entry[1] for entry in scored] == ["model-000", "model-000", "model-001", "model-001"]
     assert all(isinstance(result[str(path)], dict) for path in loras)
-
-
-def test_musubi_global_seed_fits_numpy_range_for_full_width_task_seeds():
-    seed = 2**62 + 12345
-    assert 0 <= musubi_global_seed(seed) < 2**32
-    assert musubi_global_seed(seed) == musubi_global_seed(seed)
-
-
-def test_repeats_hold_per_candidate_compute_fixed():
-    assert repeats_per_sample(2) == 20
-    assert repeats_per_sample(4) == 10
-    assert repeats_per_sample(8) == 5
-    assert repeats_per_sample(40) == 5

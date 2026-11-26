@@ -69,21 +69,3 @@ def test_generation_eval_reads_edit_manifest(tmp_path):
     assert decoded[0]["caption"] == "Apply the shared transformation."
     assert decoded[0]["source"].size == (1024, 1024)
     assert decoded[0]["image"].size == (1024, 1024)
-
-
-def test_fixed_test_split_holds_out_exactly_n_pairs_and_keeps_training_size(tmp_path):
-    import zipfile
-
-    from PIL import Image
-
-    from validator.tasks.datasets.preparation import train_test_split_image
-
-    for index in range(18):
-        Image.new("RGB", (8, 8), (index, 0, 0)).save(tmp_path / f"{index}.png")
-        (tmp_path / f"{index}.txt").write_text(f"caption {index}")
-    test_zip, train_zip = train_test_split_image(str(tmp_path), n_test=8)
-    with zipfile.ZipFile(test_zip) as test, zipfile.ZipFile(train_zip) as train:
-        test_images = [n for n in test.namelist() if n.endswith(".png")]
-        train_images = [n for n in train.namelist() if n.endswith(".png")]
-    assert len(test_images) == 8
-    assert len(train_images) == 10

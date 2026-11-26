@@ -9,8 +9,7 @@ Creation of synthetic tasks and their training-hours budgets.
 | `scheduler.py` | Creates synthetic instruct, DPO, GRPO and compression tasks, and computes training hours. |
 | `diffusion.py` | Creates synthetic image tasks. |
 | `constants.py` | Synthetic generation constants. |
-| `example_prompts.json` | Example prompts for synthetic generation. |
-| `image_synth_prompts.json` | Prompt data for synthetic image tasks. |
+| `concepts.py`, `image_synth_concepts.json` | Locked-concept synthetic image tasks: LLM templates, creative briefs, render prompts and short captions, with held-out test contexts. |
 
 ## Compression task hours
 

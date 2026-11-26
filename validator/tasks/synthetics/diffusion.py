@@ -5,16 +5,16 @@ import random
 import re
 import tempfile
 import uuid
-from collections import deque
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import AsyncGenerator
 
 import httpx
-from fiber import Keypair
 
+import validator.tasks.synthetics.concepts as concepts
 import validator.tasks.synthetics.constants as synth_cst
 from core.logging import get_logger
 from core.models.dataset_models import ImageTextPair
@@ -43,117 +43,19 @@ from validator.tasks.prep.augmentation import maybe_get_augmentation_config
 
 logger = get_logger(__name__)
 
-RECENT_PRODUCT_CONCEPTS: deque[str] = deque(maxlen=synth_cst.IMAGE_SYNTH_RECENT_CONCEPT_LIMIT)
-RECENT_EDIT_GOALS: deque[str] = deque(maxlen=synth_cst.IMAGE_SYNTH_RECENT_CONCEPT_LIMIT)
 
 
-IMAGE_STYLES = [
-    "Watercolor Painting",
-    "Oil Painting",
-    "Digital Art",
-    "Pencil Sketch",
-    "Comic Book Style",
-    "Cyberpunk",
-    "Steampunk",
-    "Impressionist",
-    "Pop Art",
-    "Minimalist",
-    "Gothic",
-    "Art Nouveau",
-    "Pixel Art",
-    "Anime",
-    "3D Render",
-    "Low Poly",
-    "Photorealistic",
-    "Vector Art",
-    "Abstract Expressionism",
-    "Realism",
-    "Futurism",
-    "Cubism",
-    "Surrealism",
-    "Baroque",
-    "Renaissance",
-    "Fantasy Illustration",
-    "Sci-Fi Illustration",
-    "Ukiyo-e",
-    "Line Art",
-    "Black and White Ink Drawing",
-    "Graffiti Art",
-    "Stencil Art",
-    "Flat Design",
-    "Isometric Art",
-    "Retro 80s Style",
-    "Vaporwave",
-    "Dreamlike",
-    "High Fantasy",
-    "Dark Fantasy",
-    "Medieval Art",
-    "Art Deco",
-    "Hyperrealism",
-    "Sculpture Art",
-    "Caricature",
-    "Chibi",
-    "Noir Style",
-    "Lowbrow Art",
-    "Psychedelic Art",
-    "Vintage Poster",
-    "Manga",
-    "Holographic",
-    "Kawaii",
-    "Monochrome",
-    "Geometric Art",
-    "Photocollage",
-    "Mixed Media",
-    "Ink Wash Painting",
-    "Charcoal Drawing",
-    "Concept Art",
-    "Digital Matte Painting",
-    "Pointillism",
-    "Expressionism",
-    "Sumi-e",
-    "Retro Futurism",
-    "Pixelated Glitch Art",
-    "Neon Glow",
-    "Street Art",
-    "Acrylic Painting",
-    "Bauhaus",
-    "Flat Cartoon Style",
-    "Carved Relief Art",
-    "Fantasy Realism",
-]
 
-with open(synth_cst.EXAMPLE_PROMPTS_PATH, "r") as f:
-    FULL_PROMPTS = json.load(f)
-
-with open(Path(__file__).with_name("image_synth_prompts.json"), "r") as f:
-    IMAGE_SYNTH_PROMPT_TEMPLATES = json.load(f)
+# Person held-out prompts come back under this JSON key and are generated after the training prompts, so the task's
+# last IMAGE_SYNTH_TEST_PAIRS pairs are its test split (see train_test_split_image). Other kinds: concepts.py.
+HELD_OUT_KEY = "test_prompts"
 
 
 @dataclass(frozen=True)
 class TriggeredPromptSet:
     trigger: str
     prompts: list[str]
-
-
-@dataclass(frozen=True)
-class ProductPromptSet:
-    trigger: str
-    product_description: str
-    reference_prompt: str
-    variant_prompts: list[str]
-
-
-@dataclass(frozen=True)
-class EditPromptPair:
-    source_prompt: str
-    edit_instruction: str
-
-
-@dataclass(frozen=True)
-class EditPromptSet:
-    goal_name: str
-    goal_description: str
-    pairs: list[EditPromptPair]
+    test_prompts: list[str] = field(default_factory=list)
 
 
 def _load_json_from_text(text: str) -> dict:
@@ -209,59 +111,15 @@ def _validate_trigger_in_prompts(trigger: str, prompts: list[str], context: str)
 
 
 def _get_triggered_prompt_set_from_response(
-    text: str, num_prompts: int, prompt_key: str = "prompts", context: str = "image"
+    text: str, num_prompts: int, prompt_key: str = "prompts", context: str = "image", num_test: int = 0
 ) -> TriggeredPromptSet:
     result = _load_json_from_text(text)
     trigger = _clean_trigger(result.get("trigger") or result.get("name"), text)
     prompts = _get_clean_prompt_list(result, prompt_key, num_prompts, text)
     _validate_trigger_in_prompts(trigger, prompts, context)
-    return TriggeredPromptSet(trigger=trigger, prompts=prompts)
-
-
-def _get_product_prompt_set_from_response(text: str, num_prompts: int) -> ProductPromptSet:
-    result = _load_json_from_text(text)
-    trigger = _clean_trigger(result.get("trigger"), text)
-    product_description = result.get("product_description")
-    reference_prompt = result.get("reference_prompt")
-    if not isinstance(product_description, str) or not product_description.strip():
-        raise ValueError(f"Product prompt response missing product_description: {text}")
-    if not isinstance(reference_prompt, str) or not reference_prompt.strip():
-        raise ValueError(f"Product prompt response missing reference_prompt: {text}")
-
-    variant_prompts = _get_clean_prompt_list(result, "variant_prompts", num_prompts, text)
-    _validate_trigger_in_prompts(trigger, [reference_prompt, *variant_prompts], "product")
-    return ProductPromptSet(
-        trigger=trigger,
-        product_description=product_description.strip(),
-        reference_prompt=reference_prompt.strip(),
-        variant_prompts=variant_prompts,
-    )
-
-
-def _get_edit_prompt_set_from_response(text: str, num_prompts: int) -> EditPromptSet:
-    result = _load_json_from_text(text)
-    goal_name = _clean_trigger(result.get("goal_name"), text)
-    goal_description = _clean_trigger(result.get("goal_description"), text)
-    raw_pairs = result.get("pairs")
-    if not isinstance(raw_pairs, list):
-        raise ValueError(f"Edit prompt response missing pairs list: {text}")
-
-    pairs = []
-    for raw_pair in raw_pairs:
-        if not isinstance(raw_pair, dict):
-            continue
-        source_prompt = raw_pair.get("source_prompt")
-        edit_instruction = raw_pair.get("edit_instruction")
-        if (
-            isinstance(source_prompt, str)
-            and source_prompt.strip()
-            and isinstance(edit_instruction, str)
-            and edit_instruction.strip()
-        ):
-            pairs.append(EditPromptPair(source_prompt.strip(), edit_instruction.strip()))
-    if len(pairs) < num_prompts:
-        raise ValueError(f"Generated {len(pairs)} valid edit pairs, expected at least {num_prompts}")
-    return EditPromptSet(goal_name, goal_description, pairs[:num_prompts])
+    test_prompts = _get_clean_prompt_list(result, HELD_OUT_KEY, num_test, text) if num_test else []
+    _validate_trigger_in_prompts(trigger, test_prompts, f"{context} held-out")
+    return TriggeredPromptSet(trigger=trigger, prompts=prompts, test_prompts=test_prompts)
 
 
 def _sanitize_ds_fragment(value: str) -> str:
@@ -276,145 +134,6 @@ def _concept_similarity(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
-def _reject_recent_concept(value: str, recent: deque[str], label: str) -> None:
-    if any(
-        _concept_similarity(value, previous) >= synth_cst.IMAGE_SYNTH_CONCEPT_SIMILARITY_LIMIT
-        for previous in recent
-    ):
-        raise ValueError(f"Generated {label} concept is too similar to a recent task")
-
-
-def _image_synth_prompt_template(template_name: str, **kwargs) -> str:
-    template = IMAGE_SYNTH_PROMPT_TEMPLATES.get(template_name)
-    if not isinstance(template, str):
-        raise ValueError(f"Missing image synth prompt template: {template_name}")
-    return template.format(**kwargs)
-
-
-def create_image_style_compatibility_prompt(first_style: str, second_style: str) -> str:
-    return f"""You are an expert in spotting incompatible artistic styles for image generation.
-Analyze the {first_style} and {second_style} styles and determine if they can be effectively combined.
-The styles are meant to be combined in a set of image generation prompts, so visual coherence is crucial.
-Return only a JSON with a boolean 'compatible' field.
-
-Example Output:
-{{"compatible": true}}"""
-
-
-def create_combined_diffusion_prompt(first_style: str, second_style: str, num_prompts: int) -> str:
-    return f"""You are an expert in creating diverse and descriptive prompts for image generation models.
-Generate {num_prompts} prompts in {first_style} and {second_style} style.
-
-Requirements:
-- Each prompt must clearly communicate the {first_style} and {second_style}'s distinctive visual characteristics
-- Include specific visual elements that define this style (textures, colors, techniques)
-- You MUST mention both of the chosen styles in the prompt
-- Vary subject matter while maintaining style consistency
-- Get super creative and do not repeat similar prompts
-- The generated images should have a coherent style
-- Return JSON only: {{"prompts": ["prompt 1", "prompt 2"]}}"""
-
-
-def create_single_style_diffusion_prompt(style: str, num_prompts: int) -> str:
-    prompt_examples = ",\n    ".join([f'"{prompt}"' for prompt in random.sample(FULL_PROMPTS[style], 5)])
-
-    return f"""You are an expert in creating diverse and descriptive prompts for image generation models.
-Generate {num_prompts} prompts in {style} style.
-
-Here are examples of prompts in the {style} style. Follow the same quality bar, but do not copy them:
-{{
-"prompts": [
-    {prompt_examples}
-]
-}}
-
-Requirements:
-- Each prompt must clearly communicate the {style}'s distinctive visual characteristics
-- Include specific visual elements that define this style (textures, colors, techniques)
-- You MUST mention the style in the prompt
-- Vary subject matter while maintaining style consistency
-- Get super creative and do not repeat similar prompts
-- The generated images should have a coherent style
-- Return JSON only: {{"prompts": ["prompt 1", "prompt 2"]}}"""
-
-
-def _logo_prompt_request(num_prompts: int) -> str:
-    return _image_synth_prompt_template("logo", num_prompts=num_prompts)
-
-
-def _social_prompt_request(num_prompts: int) -> str:
-    return _image_synth_prompt_template("social", num_prompts=num_prompts)
-
-
-def _design_prompt_request(num_prompts: int, design_type: str) -> str:
-    return _image_synth_prompt_template("design", num_prompts=num_prompts, design_type=design_type)
-
-
-def _product_creative_brief() -> str:
-    domain = random.choice(
-        (
-            "field science or environmental work",
-            "specialist cooking or fermentation",
-            "music making or sound capture",
-            "mobility, navigation, or travel",
-            "craft, repair, or fabrication",
-            "home climate, light, or acoustics",
-            "wellness, recovery, or movement",
-            "gardening, ecology, or animal care",
-            "learning, measurement, or communication",
-            "a playful everyday ritual",
-        )
-    )
-    materials = random.sample(
-        (
-            "recycled aluminum",
-            "translucent bio-resin",
-            "woven natural fiber",
-            "glazed ceramic",
-            "molded cork",
-            "technical textile",
-            "smoked glass",
-            "unfinished hardwood",
-            "soft-touch elastomer",
-            "powder-coated steel",
-            "paper composite",
-            "cast mineral",
-        ),
-        2,
-    )
-    form = random.choice(
-        (
-            "folding or transformable geometry",
-            "a compact monolithic silhouette",
-            "visible modular construction",
-            "an asymmetric sculptural form",
-            "a stackable or nesting system",
-            "a tactile hand-held form",
-            "a lightweight tensioned structure",
-            "a precise instrument-like form",
-        )
-    )
-    return f"Explore {domain}; combine {materials[0]} with {materials[1]}; favor {form}."
-
-
-def _product_prompt_request(num_prompts: int) -> str:
-    return _image_synth_prompt_template(
-        "product",
-        num_prompts=num_prompts,
-        creative_brief=_product_creative_brief(),
-        avoid_concepts="; ".join(RECENT_PRODUCT_CONCEPTS) or "none yet",
-    )
-
-
-def _edit_prompt_request(num_prompts: int) -> str:
-    return _image_synth_prompt_template(
-        "edit",
-        num_prompts=num_prompts,
-        creative_brief=_product_creative_brief(),
-        avoid_concepts="; ".join(RECENT_EDIT_GOALS) or "none yet",
-    )
-
-
 async def _post_to_fal_text(prompt: str) -> str:
     result = await post_to_fal(
         synth_cst.FAL_TEXT_PROMPT_MODEL,
@@ -427,88 +146,6 @@ async def _post_to_fal_text(prompt: str) -> str:
     return extract_text(result)
 
 
-@retry_with_backoff
-async def generate_triggered_prompt_set(prompt_request: str, num_prompts: int, context: str) -> TriggeredPromptSet:
-    logger.info(f"Calling FAL text prompt model for {context} prompt generation")
-    result = await _post_to_fal_text(prompt_request)
-    prompt_set = _get_triggered_prompt_set_from_response(result, num_prompts, context=context)
-    logger.info(f"Generated {len(prompt_set.prompts)} {context} prompts with trigger: {prompt_set.trigger}")
-    return prompt_set
-
-
-@retry_with_backoff
-async def generate_product_prompt_set(num_prompts: int) -> ProductPromptSet:
-    logger.info("Calling FAL text prompt model for product prompt generation")
-    result = await _post_to_fal_text(_product_prompt_request(num_prompts))
-    prompt_set = _get_product_prompt_set_from_response(result, num_prompts)
-    _reject_recent_concept(prompt_set.product_description, RECENT_PRODUCT_CONCEPTS, "product")
-    RECENT_PRODUCT_CONCEPTS.append(prompt_set.product_description)
-    logger.info(f"Generated {len(prompt_set.variant_prompts)} product prompts with trigger: {prompt_set.trigger}")
-    return prompt_set
-
-
-@retry_with_backoff
-async def generate_edit_prompt_set(num_prompts: int) -> EditPromptSet:
-    logger.info("Calling FAL text prompt model for creative edit-goal generation")
-    result = await _post_to_fal_text(_edit_prompt_request(num_prompts))
-    prompt_set = _get_edit_prompt_set_from_response(result, num_prompts)
-    _reject_recent_concept(prompt_set.goal_description, RECENT_EDIT_GOALS, "edit")
-    RECENT_EDIT_GOALS.append(prompt_set.goal_description)
-    logger.info("Generated %s pairs for edit goal: %s", len(prompt_set.pairs), prompt_set.goal_name)
-    return prompt_set
-
-
-@retry_with_backoff
-async def generate_diffusion_prompts(first_style: str, second_style: str | None, keypair: Keypair, num_prompts: int) -> list[str]:
-    if second_style:
-        prompt = create_combined_diffusion_prompt(first_style, second_style, num_prompts)
-        style_description = f"{first_style} and {second_style}"
-    else:
-        prompt = create_single_style_diffusion_prompt(first_style, num_prompts)
-        style_description = first_style
-
-    logger.info(f"Calling FAL text prompt model for {style_description}")
-    result = await _post_to_fal_text(prompt)
-
-    try:
-        if isinstance(result, str):
-            json_match = re.search(r"\{[\s\S]*\}", result)
-            if json_match:
-                logger.info(f"Full result from prompt generation for {style_description}: {result}")
-                result = json_match.group(0)
-            else:
-                raise ValueError("Failed to generate a valid json")
-
-        result_dict = json.loads(result) if isinstance(result, str) else result
-        return result_dict["prompts"]
-    except (json.JSONDecodeError, KeyError) as e:
-        raise ValueError(f"Failed to generate valid diffusion prompts: {e}")
-
-
-async def check_style_compatibility(first_style: str, second_style: str, config: Config) -> bool:
-    result = await _post_to_fal_text(create_image_style_compatibility_prompt(first_style, second_style))
-    result_dict = json.loads(result) if isinstance(result, str) else result
-    return result_dict.get("compatible", False)
-
-
-async def pick_style_combination(config: Config) -> tuple[str, str]:
-    for i in range(synth_cst.IMAGE_STYLE_PICKING_NUM_TRIES):
-        logger.info(f"Picking style combination. Try {i + 1} of {synth_cst.IMAGE_STYLE_PICKING_NUM_TRIES}")
-        first_style, second_style = random.sample(IMAGE_STYLES, 2)
-        try:
-            compatible = await check_style_compatibility(first_style, second_style, config)
-
-            if compatible:
-                return first_style, second_style
-            logger.info(f"Styles {first_style} and {second_style} were found incompatible, trying new combination")
-            continue
-
-        except Exception as e:
-            logger.error(f"Try {i + 1}/{synth_cst.IMAGE_STYLE_PICKING_NUM_TRIES} failed: {e}")
-
-    raise ValueError("Failed to pick a valid style combination")
-
-
 async def _get_face_reference_url() -> str:
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=TEMP_PATH_FOR_IMAGES) as tmp_dir:
@@ -516,7 +153,12 @@ async def _get_face_reference_url() -> str:
         return await upload_local_file(reference_path, "image_synth/face_refs")
 
 
-def _person_prompt_request(num_prompts: int) -> str:
+def _person_prompt_request(num_prompts: int, num_test: int = 0) -> str:
+    held_out = concepts.CONCEPT_TEMPLATES["person_held_out"].format(num_test=num_test) if num_test else ""
+    return _person_prompt_body(num_prompts) + held_out
+
+
+def _person_prompt_body(num_prompts: int) -> str:
     return f"""Generate {num_prompts} different prompts for realistic avatar images of the person in the provided image.
 
 Requirements:
@@ -537,18 +179,22 @@ Return JSON only:
 
 
 @retry_with_backoff
-async def generate_person_prompts_with_fal_vision(face_image_url: str, num_prompts: int) -> TriggeredPromptSet:
+async def generate_person_prompts_with_fal_vision(
+    face_image_url: str, num_prompts: int, num_test: int = 0
+) -> TriggeredPromptSet:
     logger.info(
         f"Generating {num_prompts} person prompts with "
         f"{synth_cst.FAL_PERSON_PROMPT_MODEL}/{synth_cst.FAL_PERSON_PROMPT_VLM}"
     )
     payload = {
         "image_urls": [face_image_url],
-        "prompt": _person_prompt_request(num_prompts),
+        "prompt": _person_prompt_request(num_prompts, num_test),
         "model": synth_cst.FAL_PERSON_PROMPT_VLM,
     }
     result = await post_to_fal(synth_cst.FAL_PERSON_PROMPT_MODEL, payload)
-    prompt_set = _get_triggered_prompt_set_from_response(extract_text(result), num_prompts, context="person")
+    prompt_set = _get_triggered_prompt_set_from_response(
+        extract_text(result), num_prompts, context="person", num_test=num_test
+    )
     logger.info(f"Generated {len(prompt_set.prompts)} person prompts with trigger: {prompt_set.trigger}")
     return prompt_set
 
@@ -608,18 +254,6 @@ async def generate_fal_images_for_prompts(
 def _triggered_ds_prefix(prefix: str, trigger: str) -> str:
     trigger_fragment = _sanitize_ds_fragment(trigger)
     return f"{prefix}_{trigger_fragment}" if trigger_fragment else prefix
-
-
-async def _generate_independent_triggered_synthetic(
-    prompt_set: TriggeredPromptSet, ds_prefix: str, category_description: str
-) -> tuple[list[ImageTextPair], str, str]:
-    model_id = random.choice(synth_cst.FAL_IMAGE_MODELS)
-    logger.info(f"Selected FAL model for {category_description} task: {model_id}")
-    image_prompt_pairs = await generate_fal_images_for_prompts(model_id, prompt_set.prompts)
-    logger.info(f"Persisting {len(image_prompt_pairs)} {category_description} image-text pairs")
-    image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
-    logger.info(f"Persisted {len(image_text_pairs)} {category_description} image-text pairs")
-    return image_text_pairs, _triggered_ds_prefix(ds_prefix, prompt_set.trigger), prompt_set.trigger
 
 
 def _to_ideogram_aspect_ratio(width: int = 1024, height: int = 1024) -> str:
@@ -715,110 +349,123 @@ async def rewrite_pairs_with_ideogram_json_prompts(image_text_pairs: list[ImageT
         return await asyncio.gather(*tasks)
 
 
-async def generate_logo_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
-    prompt_set = await generate_triggered_prompt_set(_logo_prompt_request(num_prompts), num_prompts, "logo")
-    return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.LOGO_SYNTH_DS_PREFIX, "logo")
+async def generate_edit_synthetic(num_prompts: int, num_test: int = 0) -> tuple[list[ImageTextPair], str, None]:
+    """One invented edit rule: unbranded source photos, targets edited with the full rule, and a caption that only
+    names the rule. Held-out pairs use object types that never appear in training and come last."""
+    spec = await generate_rule_edit_spec(num_prompts, num_test)
+    subjects = spec.train_subjects + spec.test_subjects
 
+    async def make_pair(subject: str) -> tuple[str, str, str]:
+        source_url = await generate_fal_image(synth_cst.FAL_STYLE_MODEL_GPT_IMAGE_2, concepts.rule_edit_source_prompt(subject))
+        target_url = await generate_fal_image(synth_cst.FAL_AVATAR_MODEL, spec.rule_spec, source_url)
+        return source_url, target_url, spec.instruction
 
-async def generate_social_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
-    prompt_set = await generate_triggered_prompt_set(_social_prompt_request(num_prompts), num_prompts, "social")
-    return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.SOCIAL_SYNTH_DS_PREFIX, "social")
-
-
-async def generate_design_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
-    design_type = random.choice(("mobile app", "web app or landing page"))
-    prompt_set = await generate_triggered_prompt_set(_design_prompt_request(num_prompts, design_type), num_prompts, "design")
-    return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.DESIGN_SYNTH_DS_PREFIX, f"{design_type} design")
-
-
-async def generate_product_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
-    prompt_set = await generate_product_prompt_set(num_prompts)
-    logger.info(f"Generating product reference image for trigger: {prompt_set.trigger}")
-    reference_image_url = await generate_fal_image(synth_cst.FAL_STYLE_MODEL_GPT_IMAGE_2, prompt_set.reference_prompt)
-    logger.info(f"Generating {len(prompt_set.variant_prompts)} product variants using reference image")
-    image_prompt_pairs = await generate_fal_images_for_prompts(
-        synth_cst.FAL_AVATAR_MODEL, prompt_set.variant_prompts, reference_image_url
-    )
-    logger.info(f"Persisting {len(image_prompt_pairs)} product image-text pairs")
-    image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
-    logger.info(f"Persisted {len(image_text_pairs)} product image-text pairs")
-    return image_text_pairs, _triggered_ds_prefix(synth_cst.PRODUCT_SYNTH_DS_PREFIX, prompt_set.trigger), prompt_set.trigger
-
-
-async def generate_edit_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, None]:
-    prompt_set = await generate_edit_prompt_set(num_prompts)
-    source_model = random.choice(synth_cst.FAL_IMAGE_MODELS)
-    source_prompt_pairs = await generate_fal_images_for_prompts(
-        source_model,
-        [pair.source_prompt for pair in prompt_set.pairs],
-    )
-    semaphore = asyncio.Semaphore(synth_cst.FAL_IMAGE_GENERATION_CONCURRENCY)
-
-    async def generate_target(index: int) -> tuple[str, str, str]:
-        source_url, _ = source_prompt_pairs[index]
-        instruction = prompt_set.pairs[index].edit_instruction
-        async with semaphore:
-            logger.info("Generating edit target %s/%s", index + 1, len(prompt_set.pairs))
-            target_url = await generate_fal_image(
-                synth_cst.FAL_AVATAR_MODEL,
-                instruction,
-                source_url,
-            )
-        return source_url, target_url, instruction
-
-    generated_pairs = await asyncio.gather(
-        *(generate_target(index) for index in range(len(prompt_set.pairs)))
-    )
+    logger.info(f"Generating {len(subjects)} pairs for edit rule '{spec.goal_name}' ({num_test} held out)")
+    generated_pairs = await concepts.gather_limited(make_pair(subject) for subject in subjects)
     image_text_pairs = await persist_image_edit_pairs(generated_pairs)
-    ds_prefix = _triggered_ds_prefix(synth_cst.EDIT_SYNTH_DS_PREFIX, prompt_set.goal_name)
-    logger.info(
-        "Persisted %s pairs for edit goal '%s': %s",
-        len(image_text_pairs),
-        prompt_set.goal_name,
-        prompt_set.goal_description,
-    )
-    return image_text_pairs, ds_prefix, None
+    logger.info("Persisted %s pairs for edit rule '%s': %s", len(image_text_pairs), spec.goal_name, spec.rule_spec)
+    return image_text_pairs, _triggered_ds_prefix(synth_cst.EDIT_SYNTH_DS_PREFIX, spec.goal_name), None
 
 
-async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[list[ImageTextPair], str, str | None]:
-    use_combined_styles = random.random() < synth_cst.PROBABILITY_STYLE_COMBINATION
-
-    if use_combined_styles:
-        first_style, second_style = await pick_style_combination(config)
-        logger.info(f"Picked style combination: {first_style} and {second_style}")
-        ds_prefix = f"{first_style}_and_{second_style}"
-    else:
-        first_style = random.choice(IMAGE_STYLES)
-        second_style = None
-        logger.info(f"Picked style: {first_style}")
-        ds_prefix = first_style
-
-    try:
-        logger.info(f"Generating {num_prompts} style prompts for {ds_prefix}")
-        prompts = await generate_diffusion_prompts(first_style, second_style, config.keypair, num_prompts)
-        logger.info(f"Generated {len(prompts)} style prompts for {ds_prefix}")
-    except Exception as e:
-        logger.error(f"Failed to generate prompts for {first_style} and {second_style}: {e}")
-        raise e
-
-    model_id = random.choice(synth_cst.FAL_IMAGE_MODELS)
-    logger.info(f"Selected FAL style model for full task: {model_id}")
-    image_prompt_pairs = await generate_fal_images_for_prompts(model_id, prompts)
-    logger.info(f"Persisting {len(image_prompt_pairs)} style image-text pairs")
-    image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
-    logger.info(f"Persisted {len(image_text_pairs)} style image-text pairs")
-    return image_text_pairs, ds_prefix, None
-
-
-async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
+async def generate_person_synthetic(num_prompts: int, num_test: int = 0) -> tuple[list[ImageTextPair], str, str]:
     logger.info("Fetching and uploading person reference image")
     face_image_url = await _get_face_reference_url()
-    prompt_set = await generate_person_prompts_with_fal_vision(face_image_url, num_prompts)
-    image_prompt_pairs = await generate_fal_images_for_prompts(synth_cst.FAL_AVATAR_MODEL, prompt_set.prompts, face_image_url)
+    prompt_set = await generate_person_prompts_with_fal_vision(face_image_url, num_prompts, num_test)
+    image_prompt_pairs = await generate_fal_images_for_prompts(
+        synth_cst.FAL_AVATAR_MODEL, prompt_set.prompts + prompt_set.test_prompts, face_image_url
+    )
     logger.info(f"Persisting {len(image_prompt_pairs)} person image-text pairs")
     image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
     logger.info(f"Persisted {len(image_text_pairs)} person image-text pairs")
     return image_text_pairs, _triggered_ds_prefix(synth_cst.PERSON_SYNTH_DS_PREFIX, prompt_set.trigger), prompt_set.trigger
+
+
+@retry_with_backoff
+async def generate_concept_spec(kind: str, num_train: int, num_test: int) -> concepts.ConceptSpec:
+    brief = concepts.creative_brief(kind)
+    request = concepts.concept_request(kind, num_train, num_test, brief, list(concepts.RECENT_CONCEPTS[kind]))
+    logger.info(f"Calling FAL text prompt model for a {kind} concept ({brief.get('brief', '')})")
+    spec = concepts.parse_concept(kind, _load_json_from_text(await _post_to_fal_text(request)), num_train, num_test)
+    if concepts.similar_to_recent(kind, f"{spec.trigger} {spec.identity_spec}", _concept_similarity):
+        raise ValueError(f"Generated {kind} concept is too similar to a recent task")
+    concepts.RECENT_CONCEPTS[kind].append(f"{spec.trigger} {spec.identity_spec}")
+    return spec
+
+
+async def _render_concept(spec: concepts.ConceptSpec) -> list[tuple[str, str]]:
+    """Reference image first, then every training and held-out image rendered from it; returns (url, caption)."""
+    reference_url = await _verified_reference(spec) if spec.reference_prompt else None
+    jobs = concepts.render_jobs(spec, reference_url)
+    logger.info(f"Rendering {len(jobs)} {spec.kind} images for {spec.trigger} ({len(spec.test_contexts)} held out)")
+    urls = await concepts.gather_limited(_render_checked(spec, job) for job in jobs)
+    return [(url, caption) for url, (_, _, _, caption) in zip(urls, jobs)]
+
+
+async def _ask_vision(image_urls: list[str], prompt: str) -> dict:
+    payload = {"image_urls": image_urls, "prompt": prompt, "model": synth_cst.FAL_PERSON_PROMPT_VLM}
+    return _load_json_from_text(extract_text(await post_to_fal(synth_cst.FAL_PERSON_PROMPT_MODEL, payload)))
+
+
+async def _verified_reference(spec: concepts.ConceptSpec) -> str:
+    """Generate the reference and confirm it shows the described concept before anything is rendered from it."""
+    for attempt in range(synth_cst.IMAGE_SYNTH_QA_RETRIES + 1):
+        logger.info(f"Generating {spec.kind} reference image for {spec.trigger} (attempt {attempt + 1})")
+        url = await generate_fal_image(synth_cst.FAL_STYLE_MODEL_GPT_IMAGE_2, concepts.reference_prompt(spec))
+        verdict = await _ask_vision([url], concepts.reference_qa_request(spec))
+        if verdict.get("matches") is True:
+            return url
+        logger.info(f"Reference for {spec.trigger} does not match its spec: {verdict.get('reason', '')}")
+    raise ValueError(f"{spec.kind} reference for {spec.trigger} never matched its spec")
+
+
+async def _check_against_reference(spec: concepts.ConceptSpec, reference_url: str, image_url: str, caption: str) -> dict:
+    return await _ask_vision([reference_url, image_url], concepts.qa_request(spec, caption))
+
+
+async def _render_checked(spec: concepts.ConceptSpec, job: tuple[str, str | None, str, str]) -> str:
+    """Render one image; when it is rendered from the reference, re-render until a vision check confirms it still
+    shows the same concept, clearly visible. Raises after IMAGE_SYNTH_QA_RETRIES re-renders, rejecting the concept."""
+    model, reference_url, prompt, caption = job
+    for attempt in range(synth_cst.IMAGE_SYNTH_QA_RETRIES + 1):
+        url = await generate_fal_image(model, prompt, reference_url)
+        if reference_url is None:
+            return url
+        verdict = await _check_against_reference(spec, reference_url, url, caption)
+        if concepts.qa_passed(verdict):
+            return url
+        logger.info(f"Consistency check failed for '{caption}' (attempt {attempt + 1}): {verdict.get('reason', '')}")
+    raise ValueError(f"{spec.kind} image '{caption}' failed the consistency check {synth_cst.IMAGE_SYNTH_QA_RETRIES + 1} times")
+
+
+async def generate_concept_synthetic(
+    kind: str, num_prompts: int, num_test: int = 0
+) -> tuple[list[ImageTextPair], str, str]:
+    """num_prompts training pairs then num_test held-out pairs for one locked concept (see concepts.py).
+    A concept whose images keep failing the consistency check is dropped and a new concept is generated."""
+    for attempt in range(synth_cst.IMAGE_SYNTH_CONCEPT_ATTEMPTS):
+        spec = await generate_concept_spec(kind, num_prompts, num_test)
+        try:
+            image_caption_pairs = await _render_concept(spec)
+            break
+        except ValueError as error:
+            logger.warning(f"Dropping {kind} concept {spec.trigger} (attempt {attempt + 1}): {error}")
+    else:
+        raise ValueError(f"No {kind} concept passed the consistency check in {synth_cst.IMAGE_SYNTH_CONCEPT_ATTEMPTS} attempts")
+    image_text_pairs = await persist_image_text_pairs(image_caption_pairs)
+    logger.info(f"Persisted {len(image_text_pairs)} {kind} pairs for {spec.trigger}")
+    return image_text_pairs, _triggered_ds_prefix(f"{kind}", spec.trigger), spec.trigger
+
+
+@retry_with_backoff
+async def generate_rule_edit_spec(num_train: int, num_test: int) -> concepts.RuleEditSpec:
+    brief = concepts.creative_brief("edit")
+    request = concepts.concept_request("edit", num_train, num_test, brief, list(concepts.RECENT_CONCEPTS["edit"]))
+    logger.info(f"Calling FAL text prompt model for an edit rule ({brief['brief']})")
+    spec = concepts.parse_rule_edit(_load_json_from_text(await _post_to_fal_text(request)), num_train, num_test)
+    if concepts.similar_to_recent("edit", spec.rule_spec, _concept_similarity):
+        raise ValueError("Generated edit rule is too similar to a recent task")
+    concepts.RECENT_CONCEPTS["edit"].append(spec.rule_spec)
+    return spec
 
 
 def pick_image_synth_category() -> str:
@@ -837,28 +484,21 @@ def pick_image_training_mode(model_type: ImageModelType) -> ImageTrainingMode:
 
 
 async def generate_image_synthetic_by_category(
-    config: Config, num_prompts: int, category: str
+    config: Config, num_prompts: int, category: str, num_test: int = 0
 ) -> tuple[list[ImageTextPair], str, str | None]:
+    """num_prompts training pairs, then num_test held-out pairs generated last (the task's test split)."""
     logger.info(f"Selected image synth category: {category}")
 
-    if category == synth_cst.IMAGE_SYNTH_CATEGORY_STYLE:
-        return await generate_style_synthetic(config, num_prompts)
-    if category == synth_cst.IMAGE_SYNTH_CATEGORY_LOGO:
-        return await generate_logo_synthetic(num_prompts)
-    if category == synth_cst.IMAGE_SYNTH_CATEGORY_SOCIAL:
-        return await generate_social_synthetic(num_prompts)
-    if category == synth_cst.IMAGE_SYNTH_CATEGORY_DESIGN:
-        return await generate_design_synthetic(num_prompts)
-    if category == synth_cst.IMAGE_SYNTH_CATEGORY_PRODUCT:
-        return await generate_product_synthetic(num_prompts)
+    if category in concepts.T2I_KINDS:
+        return await generate_concept_synthetic(category, num_prompts, num_test)
     if category != synth_cst.IMAGE_SYNTH_CATEGORY_PERSON:
         raise ValueError(f"Unknown image synth category: {category}")
 
     last_result: tuple[list[ImageTextPair], str, str | None] | None = None
     for attempt in range(synth_cst.PERSON_GEN_RETRIES):
-        image_text_pairs, ds_prefix, trigger_word = await generate_person_synthetic(num_prompts)
+        image_text_pairs, ds_prefix, trigger_word = await generate_person_synthetic(num_prompts, num_test)
         last_result = (image_text_pairs, ds_prefix, trigger_word)
-        if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS + synth_cst.IMAGE_SYNTH_TEST_PAIRS:
+        if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS + num_test:
             return image_text_pairs, ds_prefix, trigger_word
         if attempt < synth_cst.PERSON_GEN_RETRIES - 1:
             logger.info(f"Person synth generation only produced {len(image_text_pairs)} pairs, trying again...")
@@ -903,8 +543,9 @@ async def create_synthetic_image_task(
             f"max_num_prompts must be at least {synth_cst.MIN_IMAGE_SYNTH_PAIRS}, got {prompt_cap}"
         )
     # Training pairs as before, plus a fixed held-out split generated on top so the test set grows without
-    # shrinking the training set.
-    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap) + synth_cst.IMAGE_SYNTH_TEST_PAIRS
+    # shrinking the training set. Held-out pairs are written to leave the training distribution and come last.
+    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
+    num_test = synth_cst.IMAGE_SYNTH_TEST_PAIRS
     model_info = await anext(models)
     if training_mode is None:
         training_mode = pick_image_training_mode(model_info.model_type)
@@ -920,10 +561,10 @@ async def create_synthetic_image_task(
     )
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     if training_mode == ImageTrainingMode.EDIT:
-        image_text_pairs, ds_prefix, trigger_word = await generate_edit_synthetic(num_prompts)
+        image_text_pairs, ds_prefix, trigger_word = await generate_edit_synthetic(num_prompts, num_test)
     else:
         image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
-            config, num_prompts, pick_image_synth_category()
+            config, num_prompts, pick_image_synth_category(), num_test
         )
     if model_info.model_type == ImageModelType.IDEOGRAM4:
         image_text_pairs = await rewrite_pairs_with_ideogram_json_prompts(image_text_pairs)

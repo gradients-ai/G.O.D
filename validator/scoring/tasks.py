@@ -517,7 +517,10 @@ def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskT
 
 
 def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) -> float:
-    """The task's weighted image loss: DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * mean(text-guided) + the rest * mean(no-text).
+    """The task's image loss.
+
+    Text-to-image results carry guided_losses (the prediction at the model's inference CFG) and are scored by its
+    mean. Otherwise (edit tasks): DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * mean(text-guided) + the rest * mean(no-text).
 
     NaN when the result carries no per-image losses or either loss vector is empty: nothing was measured, and a
     missing mean is never a loss of 0.
@@ -525,6 +528,8 @@ def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) 
     losses = eval_result.eval_loss
     if not isinstance(losses, DiffusionLosses) or not losses.text_guided_losses or not losses.no_text_losses:
         return math.nan
+    if losses.guided_losses:
+        return sum(losses.guided_losses) / len(losses.guided_losses)
 
     text_guided_avg = sum(losses.text_guided_losses) / len(losses.text_guided_losses)
     no_text_avg = sum(losses.no_text_losses) / len(losses.no_text_losses)
@@ -544,6 +549,8 @@ def _per_image_losses(eval_result: EvaluationResultImage) -> list[float] | None:
         return None
     if len(losses.text_guided_losses) != len(losses.no_text_losses):
         return None
+    if losses.guided_losses:
+        return list(losses.guided_losses) if len(losses.guided_losses) == len(losses.text_guided_losses) else None
     weight = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
     return [
         weight * text_guided + (1 - weight) * no_text

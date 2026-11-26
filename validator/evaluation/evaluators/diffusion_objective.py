@@ -59,17 +59,26 @@ SAMPLE_STEM_HEX_CHARS = 16
 LORA_DOWN_SUFFIXES = (".lora_down.weight", ".lora_A.weight")
 
 # AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise.
-# Score where the noisy input's signal-to-noise ratio is about 0.25 or lower: there the learned concept decides
-# the prediction, while lower noise mostly rewards LoRAs that left the base model's detail prior untouched.
-# Latent flow models: SNR = (1 - sigma) / sigma, so sigma 0.75-1.0 (t 750-1000).
+# Score the noisiest informative part of the range: there the learned concept decides the prediction, while lower
+# noise mostly rewards LoRAs that left the base model's detail prior untouched.
+# Latent flow models: sigma 0.9-1.0 (denoising steps 0-100).
 EVAL_MIN_DENOISING_STEPS = 0
-EVAL_MAX_DENOISING_STEPS = 250
-EVAL_MUSUBI_MIN_TIMESTEP = 750
+EVAL_MAX_DENOISING_STEPS = 100
 EVAL_MUSUBI_MAX_TIMESTEP = 1000
-# HiDream O1 noises pixel-space x0 with noise_scale=8, so SNR = (1 - sigma) / (8 * sigma): the same SNR range is
-# sigma 0.33-1.0. Its noisiest 5% alone is nearly pure noise and cannot separate candidates.
-EVAL_HIDREAM_MAX_DENOISING_STEPS = 670
+# HiDream O1 noises pixel-space x0 with noise_scale=8, so SNR = (1 - sigma) / (8 * sigma) and the same difficulty
+# as latent sigma 0.9 sits near sigma 0.53. Text-to-image scores sigma 0.54-0.84: above that the input is close to
+# pure noise with nothing left to denoise, and the noisiest band alone picked the wrong winner.
+EVAL_HIDREAM_MIN_DENOISING_STEPS = 160
+EVAL_HIDREAM_MAX_DENOISING_STEPS = 460
+# HiDream edit (Musubi) keeps sigma 0.33-1.0.
 EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 330
+# Text-to-image is scored on the classifier-free-guided prediction at each model's inference CFG, the prediction
+# that makes the images; edits keep the unguided 50/50 captioned/empty score, which already separates them.
+INFERENCE_CFG = {"flux2-klein-4b": 4.0, "moss-image-base": 3.0, "hidream-o1": 5.0}
+
+
+def inference_cfg(model_type: str, training_mode: str) -> float | None:
+    return INFERENCE_CFG.get(model_type) if training_mode == "text-to-image" else None
 
 
 def lora_modules_from_file(path: Path) -> tuple[dict[str, int], dict[str, float], set[str]]:
@@ -199,7 +208,9 @@ def _evaluation_config(
     output: Path,
     steps: int,
     seed: int,
+    cfg: dict | None = None,
 ) -> dict:
+    """cfg: {"role": "store" | "combine", "scale": float, "store": path} for the guided text-to-image passes."""
     template = TEMPLATE_ROOT / TEMPLATES[(model_type, training_mode)]
     config = yaml.safe_load(template.read_text(encoding="utf-8"))
     process = config["config"]["process"][0]
@@ -207,6 +218,10 @@ def _evaluation_config(
     process["training_folder"] = str(output.parent / "unused-checkpoints")
     process["evaluation_output"] = str(output)
     process["evaluation_seed"] = seed
+    if cfg:
+        process["evaluation_cfg_role"] = cfg["role"]
+        process["evaluation_cfg_scale"] = cfg["scale"]
+        process["evaluation_cfg_store"] = str(cfg["store"])
     mask_dir = _mask_dir(dataset, training_mode)
     if mask_dir is not None:
         process["evaluation_mask_dir"] = str(mask_dir)
@@ -240,7 +255,9 @@ def _evaluation_config(
             "do_random_cfg": False,
             "prompt_dropout_prob": 0.0,
             "noise_multiplier": 1.0,
-            "min_denoising_steps": EVAL_MIN_DENOISING_STEPS,
+            "min_denoising_steps": (
+                EVAL_HIDREAM_MIN_DENOISING_STEPS if model_type == "hidream-o1" else EVAL_MIN_DENOISING_STEPS
+            ),
             "max_denoising_steps": (
                 EVAL_HIDREAM_MAX_DENOISING_STEPS
                 if model_type == "hidream-o1"
@@ -266,6 +283,7 @@ def _run_objective(
     sample_count: int,
     repeats: int,
     seed: int,
+    cfg: dict | None = None,
 ) -> dict:
     output = model_dir / f"{label}_records.json"
     config_path = model_dir / f"{label}.yaml"
@@ -277,13 +295,20 @@ def _run_objective(
         output,
         sample_count * repeats,
         seed,
+        cfg,
     )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     subprocess.run(
         ["python", "run.py", str(config_path)], cwd=AI_TOOLKIT_ROOT, env=_subprocess_env(), check=True
     )
     records = json.loads(output.read_text(encoding="utf-8"))
-    return _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
+    summary = _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
+    if cfg and cfg["role"] == "combine":
+        captioned = _mean_field_by_sample(records, "loss_captioned", sample_count, repeats, "AI Toolkit")
+        if captioned is None:
+            raise ValueError("Guided evaluation returned no captioned losses; is the evaluator extension current?")
+        summary["captioned_losses"] = captioned
+    return summary
 
 
 def repeats_per_sample(samples: int) -> int:
@@ -500,7 +525,11 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             config["seed"],
                         )
                 else:
+                    scale = inference_cfg(*combination)
+                    store = model_dir / "cfg-store"
+
                     def run(dataset, label):
+                        role = None if scale is None else ("store" if label == "no_text" else "combine")
                         return _run_objective(
                             *combination,
                             dataset,
@@ -510,13 +539,17 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             len(rows),
                             config["repeats"],
                             config["seed"],
+                            {"role": role, "scale": scale, "store": store} if role else None,
                         )
-                guided = run(conditional, "conditional")
+                # The empty-prompt pass runs first: with CFG it stores the predictions the captioned pass combines.
                 blank = run(no_text, "no_text")
+                guided = run(conditional, "conditional")
                 eval_loss = {
-                    "text_guided_losses": guided["losses"],
+                    "text_guided_losses": guided.get("captioned_losses", guided["losses"]),
                     "no_text_losses": blank["losses"],
                 }
+                if "captioned_losses" in guided:
+                    eval_loss["guided_losses"] = guided["losses"]
                 if "changed_losses" in guided:
                     eval_loss["text_guided_changed_losses"] = guided["changed_losses"]
                 if "unchanged_losses" in guided:
