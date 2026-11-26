@@ -17,6 +17,7 @@ from validator.scoring.tournaments import calculate_tournament_type_scores_from_
 from validator.scoring.tournaments import compute_pvp_tournament_points
 from validator.scoring.tournaments import exponential_decline_mapping
 from validator.scoring.tournaments import get_boss_round_pair_weights
+from validator.scoring.tournaments import get_quant_tournament_weights_from_data
 from validator.scoring.tournaments import get_tournament_weights_from_data
 from validator.scoring.tournaments import individual_scores_to_pairwise
 from validator.scoring.tournaments import pvp_results_to_pairwise
@@ -1020,3 +1021,51 @@ class TestBossRoundEmissionsProductionPath:
         assert all_node_weights[1] == pytest.approx(0.2 * scaled_text_tournament_weight)
         assert all_node_weights[2] == 0.0
         assert undistributed == pytest.approx(0.0)
+
+
+_SKIP_BOSS_TOURNAMENT = "tourn_552dac324b78e7bf_20261123"
+_SKIP_BOSS_WINNER = "5CRjufiW2ypoSeNv6Hf4snpL4TKzPtk4PsjQxdZ3V5kiXhDE"
+_SKIP_BOSS_RUNNER_UP = "5DPBiMEcX4HGG541hdofZHKixuKbVEqFGCC6r2Z3b4LPsReP"
+_SKIP_BOSS_THIRD = "5CUkrcTz1rDZDbTcMQinrjdGQi8SYcPXBbbZ2PXEtjkRQdxZ"
+_SKIP_BOSS_OLD_TEXT_BOSS = "5DDVSRDLbcd57ZHnzFNjHdvcffekjiRdRJeBfWUHeSkWFprv"
+
+
+class TestQuantPlacementOverride:
+    """One compression tournament pays the round-3 top three in order and pays its boss nothing."""
+
+    def _placed(self, tournament_id: str, winner: str = _SKIP_BOSS_WINNER) -> TournamentResultsWithWinners:
+        return TournamentResultsWithWinners(
+            tournament_id=tournament_id,
+            rounds=[],
+            winner_hotkey=winner,
+            base_winner_hotkey=_SKIP_BOSS_OLD_TEXT_BOSS,
+            final_positions={
+                _SKIP_BOSS_WINNER: 1,
+                cts.EMISSION_BURN_HOTKEY: 2,
+                _SKIP_BOSS_RUNNER_UP: 3,
+            },
+        )
+
+    def test_named_tournament_pays_the_round_three_top_three(self):
+        weights = get_quant_tournament_weights_from_data(self._placed(_SKIP_BOSS_TOURNAMENT))
+
+        assert _SKIP_BOSS_OLD_TEXT_BOSS not in weights
+        assert cts.EMISSION_BURN_HOTKEY not in weights
+        assert weights == {
+            _SKIP_BOSS_WINNER: pytest.approx(exponential_decline_mapping(3, 1)),
+            _SKIP_BOSS_RUNNER_UP: pytest.approx(exponential_decline_mapping(3, 2)),
+            _SKIP_BOSS_THIRD: pytest.approx(exponential_decline_mapping(3, 3)),
+        }
+
+    def test_named_tournament_with_another_winner_keeps_stored_places(self):
+        weights = get_quant_tournament_weights_from_data(self._placed(_SKIP_BOSS_TOURNAMENT, winner=cts.EMISSION_BURN_HOTKEY))
+
+        assert _SKIP_BOSS_THIRD not in weights
+        assert _SKIP_BOSS_OLD_TEXT_BOSS in weights
+
+    def test_any_other_tournament_still_pays_the_boss_second(self):
+        weights = get_quant_tournament_weights_from_data(self._placed("tourn_other"))
+
+        assert weights[_SKIP_BOSS_OLD_TEXT_BOSS] == pytest.approx(exponential_decline_mapping(3, 2))
+        assert weights[_SKIP_BOSS_WINNER] == pytest.approx(exponential_decline_mapping(3, 1))
+        assert weights[_SKIP_BOSS_RUNNER_UP] == pytest.approx(exponential_decline_mapping(3, 3))
