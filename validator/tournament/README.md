@@ -169,8 +169,6 @@ In the text boss round the big task runs last. It is created only if the crown i
 
 The placements are the same whether the boss round was played and lost or skipped by the early stop.
 
-One compression tournament, `tourn_552dac324b78e7bf_20261123`, does not pay its boss. That boss is the previous text champion, and the challenger took the crown, which would have paid the boss 2nd. The weight setter pays the top three of the round-3 standings instead, in order. Later tournaments are unchanged (`_QUANT_PLACEMENT_OVERRIDES` in `validator/scoring/tournaments.py`).
-
 | Tournament | Third place |
 | --- | --- |
 | Text | The next miner after the challenger in the cumulative standings after round 3. |
