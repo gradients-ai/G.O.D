@@ -58,8 +58,7 @@ changes:
       rollouts with their rewards as training input, alongside the prompts. Reward functions will vary more from
       task to task and will be chosen to suit the dataset each task is drawn from, so that they measure what is
       useful for that data rather than applying the same generic checks everywhere. GRPO will also become the
-      final task of round 3, the one that decides who goes through to the boss round. A later follow-up being
-      considered would score the rollouts a submitted model produces during evaluation directly.
+      final task of round 3, the one that decides who goes through to the boss round.
     why: >-
       GRPO research has moved on since the task was last updated, and we want to expand what we offer
       customers in this direction. Rollouts as training input and rewards matched to each dataset bring the
