@@ -490,6 +490,37 @@ def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWit
     return weights
 
 
+# This compression tournament's boss is the previous text champion, seeded from text. The challenger took the
+# crown, which would pay that boss 2nd. For this tournament only, the boss is left out and the top three of the
+# round-3 standings are paid in order. Later tournaments are unchanged.
+_QUANT_PLACEMENT_OVERRIDES: dict[str, tuple[str, str, str]] = {
+    "tourn_552dac324b78e7bf_20261123": (
+        "5CRjufiW2ypoSeNv6Hf4snpL4TKzPtk4PsjQxdZ3V5kiXhDE",
+        "5DPBiMEcX4HGG541hdofZHKixuKbVEqFGCC6r2Z3b4LPsReP",
+        "5CUkrcTz1rDZDbTcMQinrjdGQi8SYcPXBbbZ2PXEtjkRQdxZ",
+    ),
+}
+
+
+def _apply_quant_placement_override(data: TournamentResultsWithWinners | None) -> TournamentResultsWithWinners | None:
+    """Replace the paid places of a tournament in _QUANT_PLACEMENT_OVERRIDES once its stored winner is the override's 1st.
+
+    Before completion, or with any other winner, the stored placements are used unchanged.
+    """
+    if data is None or data.tournament_id not in _QUANT_PLACEMENT_OVERRIDES:
+        return data
+    placed = _QUANT_PLACEMENT_OVERRIDES[data.tournament_id]
+    if data.winner_hotkey != placed[0]:
+        logger.warning(
+            f"Tournament {data.tournament_id}: stored winner {data.winner_hotkey} is not the override's {placed[0]}; "
+            f"placement override not applied"
+        )
+        return data
+    positions = {hotkey: position for position, hotkey in enumerate(placed, start=1)}
+    logger.info(f"Tournament {data.tournament_id}: boss left out of the paid places; paid places {positions}")
+    return data.model_copy(update={"final_positions": positions})
+
+
 def get_tournament_weights_from_data(
     text_tournament_data: TournamentResultsWithWinners | None,
     image_tournament_data: TournamentResultsWithWinners | None,
@@ -502,4 +533,4 @@ def get_tournament_weights_from_data(
 
 def get_quant_tournament_weights_from_data(quant_tournament_data: TournamentResultsWithWinners | None) -> dict[str, float]:
     """Rank weights for the quant tournament's paid positions, on the same ladder as text and image."""
-    return _compute_weights(TournamentType.QUANT, quant_tournament_data)
+    return _compute_weights(TournamentType.QUANT, _apply_quant_placement_override(quant_tournament_data))
