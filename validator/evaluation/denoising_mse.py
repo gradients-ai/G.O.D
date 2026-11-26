@@ -9,21 +9,32 @@ import hashlib
 import torch
 
 
-def case_seed(image_hash: str, stratum: int, noise_index: int, master_seed: int = 42) -> int:
+def case_seed(image_hash: str, stratum: int, noise_index: int, master_seed: int) -> int:
     key = f"{master_seed}:{image_hash}:{stratum}:{noise_index}"
     return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "little") % (2**63 - 1)
 
 
-def flow_cases(latent, image_hash: str, strata: int = 16, noises: int = 4):
+def flow_cases(
+    latent,
+    image_hash: str,
+    master_seed: int,
+    strata: int = 16,
+    noises: int = 4,
+    sigma_min: float = 0.0,
+    sigma_max: float = 1.0,
+):
+    """Shared prediction cases: `strata` evenly spaced noise levels in [sigma_min, sigma_max], `noises` draws each."""
     if strata < 1 or noises < 1:
         raise ValueError("Strata and noise counts must be positive")
+    if not 0.0 <= sigma_min < sigma_max <= 1.0:
+        raise ValueError("Noise band must satisfy 0 <= sigma_min < sigma_max <= 1")
     if latent.shape[0] != 1 or latent.device.type != "cpu":
         raise ValueError("Cache one CPU latent per image")
     cases = []
     for band in range(strata):
-        # Midpoints exclude unstable endpoints while covering uniform flow time.
-        sigma = (band + 0.5) / strata
-        seeds = [case_seed(image_hash, band, sample) for sample in range(noises)]
+        # Midpoints of equal sub-bands exclude the unstable endpoints.
+        sigma = sigma_min + (band + 0.5) / strata * (sigma_max - sigma_min)
+        seeds = [case_seed(image_hash, band, sample, master_seed) for sample in range(noises)]
         noise = torch.cat(
             [torch.randn(latent.shape, generator=torch.Generator().manual_seed(seed), dtype=torch.float32) for seed in seeds]
         )

@@ -26,7 +26,7 @@ def _pairs(count: int) -> list[ImageTextPair]:
 
 @pytest.mark.asyncio
 async def test_create_synthetic_image_task_honors_forced_training_mode(monkeypatch):
-    pairs = _pairs(diffusion.synth_cst.MIN_IMAGE_SYNTH_PAIRS)
+    pairs = _pairs(diffusion.synth_cst.MIN_IMAGE_SYNTH_PAIRS + diffusion.synth_cst.IMAGE_SYNTH_TEST_PAIRS)
     monkeypatch.setattr(diffusion, "generate_edit_synthetic", AsyncMock(return_value=([], "edit", None)))
     monkeypatch.setattr(
         diffusion,

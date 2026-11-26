@@ -46,6 +46,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.db.sql.tasks import get_or_create_image_eval_seed
 from validator.db.sql.tournament_performance import is_paired_comparison_task
 from validator.evaluation.docker_evaluation import decoded_model_urls_for
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
@@ -890,9 +891,13 @@ async def _evaluate_submissions(
         if not repos_to_evaluate:
             return results
 
+        if config is None:
+            raise ValueError("Image evaluation needs the database to read the task's evaluation seed")
+        eval_seed = await get_or_create_image_eval_seed(task.task_id, config.psql_db)
         evaluation_params = {
             "test_split_url": task.test_data,
             "original_model_repo": base_model,
+            "eval_seed": eval_seed,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
             "training_mode": task.training_mode,

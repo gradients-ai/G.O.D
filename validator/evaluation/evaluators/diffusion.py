@@ -25,6 +25,7 @@ from validator.evaluation.image_flow_adapter import ImageFlowAdapter
 from validator.evaluation.image_test_data import decoded_images
 from validator.evaluation.image_test_data import read_dataset
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,8 +39,22 @@ def _enable_download_progress() -> None:
         logger.info("huggingface progress bars unavailable; using stage logs only")
 
 
-DEFAULT_STRATA = 16
-DEFAULT_NOISES = 16
+# Score only the high-noise band, where a LoRA's learned concept (layout, identity, style) decides the
+# prediction. Lower noise levels mostly measure damage to the base model's detail prior, so an average over the
+# full range ranks barely-trained LoRAs first. Fewer levels with more draws each keeps the per-miner cost low.
+DEFAULT_SIGMA_MIN = 0.8
+DEFAULT_SIGMA_MAX = 1.0
+DEFAULT_STRATA = 8
+# Per-miner compute is held fixed: the case budget per caption mode is spread over the test images, so a bigger
+# test split trades noise draws per level for images instead of adding time.
+CASES_PER_MODE = 512
+MIN_NOISES = 8
+MAX_NOISES = 16
+
+
+def noises_per_level(strata: int, images: int) -> int:
+    """Noise draws per level that keep strata x images x draws near CASES_PER_MODE."""
+    return max(MIN_NOISES, min(MAX_NOISES, CASES_PER_MODE // max(1, strata * images)))
 
 
 def load_base(api, repo, family, root):
@@ -94,6 +109,9 @@ def evaluate(config, output):
         validation = decoded_images(read_dataset(config["dataset"], scratch / "test.zip"))
         api = HfApi()
         adapter, base, clip, encoder = load_base(api, config["repo"], family, config["comfy_root"])
+        if config["noises"] is None:
+            config["noises"] = noises_per_level(config["strata"], len(validation))
+        logger.info("noise draws per level=%s for %s test images", config["noises"], len(validation))
         cases = []
         logger.info("eval_stage=encode_latents images=%s", len(validation))
         for index, item in enumerate(validation, start=1):
@@ -130,7 +148,13 @@ def evaluate(config, output):
                     image_started = time.monotonic()
                     data = torch.load(item["cache"], map_location="cpu", weights_only=True)
                     questions = flow_cases(
-                        data["scaled"], item["id"], config["strata"], config["noises"]
+                        data["scaled"],
+                        item["id"],
+                        config["seed"],
+                        config["strata"],
+                        config["noises"],
+                        DEFAULT_SIGMA_MIN,
+                        DEFAULT_SIGMA_MAX,
                     )
                     for mode in vectors:
                         prompt = item["caption"] if mode == "text" else ""
@@ -142,7 +166,7 @@ def evaluate(config, output):
                         guider.set_cfg(1.0)
                         schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
                         guider.sample(torch.zeros_like(data["latent"]), data["latent"], sampler, schedule,
-                                      disable_pbar=True, seed=42)
+                                      disable_pbar=True, seed=config["seed"])
                         losses = [row["mse"] for row in sampler.rows]
                         if len(losses) != config["strata"] * config["noises"]:
                             raise ValueError("Incomplete prediction cases")
@@ -164,7 +188,9 @@ def evaluate(config, output):
                 guider.set_conds(cond, [])
                 guider.set_cfg(1.0)
                 schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
-                guider.sample(torch.zeros_like(data["latent"]), data["latent"], repeated, schedule, disable_pbar=True, seed=42)
+                guider.sample(
+                    torch.zeros_like(data["latent"]), data["latent"], repeated, schedule, disable_pbar=True, seed=config["seed"]
+                )
                 if not np.allclose(original, [r["mse"] for r in repeated.rows], rtol=1e-5, atol=1e-7):
                     raise ValueError("Prediction scores failed repeatability check")
                 result[repo] = {
@@ -197,6 +223,14 @@ def evaluate(config, output):
         return result
 
 
+def _eval_seed() -> int:
+    """The task's evaluation seed. Required: a fixed default would make the noise predictable."""
+    value = os.environ.get("IMAGE_EVAL_SEED")
+    if not value:
+        raise SystemExit("Image evaluation requires IMAGE_EVAL_SEED")
+    return int(value)
+
+
 def main():
     configure_eval_logging()
     _enable_download_progress()
@@ -207,8 +241,9 @@ def main():
         "repo": os.environ.get("ORIGINAL_MODEL_REPO"), "family": os.environ.get("MODEL_TYPE"), "models": models,
         "comfy_root": Path(os.environ.get("COMFY_ROOT", "/app/validator/evaluation/ComfyUI")),
         "strata": int(os.environ.get("IMAGE_EVAL_STRATA", DEFAULT_STRATA)),
-        "noises": int(os.environ.get("IMAGE_EVAL_NOISES", DEFAULT_NOISES)),
+        "noises": int(os.environ["IMAGE_EVAL_NOISES"]) if os.environ.get("IMAGE_EVAL_NOISES") else None,
         "batch_size": int(os.environ.get("IMAGE_EVAL_BATCH_SIZE", 2)),
+        "seed": _eval_seed(),
     }
     logger.info(
         "image eval config family=%s base=%s models=%s strata=%s noises=%s batch_size=%s",

@@ -858,7 +858,7 @@ async def generate_image_synthetic_by_category(
     for attempt in range(synth_cst.PERSON_GEN_RETRIES):
         image_text_pairs, ds_prefix, trigger_word = await generate_person_synthetic(num_prompts)
         last_result = (image_text_pairs, ds_prefix, trigger_word)
-        if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS:
+        if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS + synth_cst.IMAGE_SYNTH_TEST_PAIRS:
             return image_text_pairs, ds_prefix, trigger_word
         if attempt < synth_cst.PERSON_GEN_RETRIES - 1:
             logger.info(f"Person synth generation only produced {len(image_text_pairs)} pairs, trying again...")
@@ -902,7 +902,9 @@ async def create_synthetic_image_task(
         raise ValueError(
             f"max_num_prompts must be at least {synth_cst.MIN_IMAGE_SYNTH_PAIRS}, got {prompt_cap}"
         )
-    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
+    # Training pairs as before, plus a fixed held-out split generated on top so the test set grows without
+    # shrinking the training set.
+    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap) + synth_cst.IMAGE_SYNTH_TEST_PAIRS
     model_info = await anext(models)
     if training_mode is None:
         training_mode = pick_image_training_mode(model_info.model_type)
@@ -931,8 +933,9 @@ async def create_synthetic_image_task(
     for i, pair in enumerate(image_text_pairs):
         logger.info(f"Pair {i+1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
 
-    if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS:
-        number_of_hours = _image_competition_hours_for_dataset_size(len(image_text_pairs))
+    training_pairs = len(image_text_pairs) - synth_cst.IMAGE_SYNTH_TEST_PAIRS
+    if training_pairs >= synth_cst.MIN_IMAGE_SYNTH_PAIRS:
+        number_of_hours = _image_competition_hours_for_dataset_size(training_pairs)
         if use_higher_training_hours:
             number_of_hours = round(number_of_hours + synth_cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
 

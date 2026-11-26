@@ -373,3 +373,14 @@ async def test_tournament_details_pass_the_paired_detail_through() -> None:
     assert served["boss_comparisons"][0]["paired"] == PAIRED
     assert served["boss_comparisons"][1]["paired"] is None
     assert body["boss_round_performance"][0]["paired_comparison"] == PAIRED
+
+
+@pytest.mark.asyncio
+async def test_image_audit_task_keeps_the_published_eval_seed() -> None:
+    validator = FakeValidator()
+    image_task = TASK | {"task_type": "ImageTask", "model_type": "qwen-image", "eval_seed": 4611686018427387904}
+    validator.respond(f"/auditing/tasks/{TASK_ID}", json=image_task | {"hotkey_details": []})
+    async with client(validator) as api:
+        single = await api.get(f"/auditing/tasks/{TASK_ID}")
+    assert single.status_code == 200
+    assert single.json()["eval_seed"] == 4611686018427387904

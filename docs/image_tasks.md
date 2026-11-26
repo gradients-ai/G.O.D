@@ -47,7 +47,12 @@ An edit sample contains:
 
 Task preparation writes a `manifest.jsonl` with one source per target and
 keeps complete source/target/instruction groups together during the held-out
-split. Trainer containers reject missing controls and paths that escape the
+split.
+
+Synthetic image tasks generate `IMAGE_SYNTH_TEST_PAIRS` (8) pairs on top of the
+training pairs they draw, and the split holds out exactly those. The training set
+keeps its size and training hours scale with the training pairs. Organic datasets
+keep the 10% split. Trainer containers reject missing controls and paths that escape the
 dataset root.
 
 Synthetic edit tasks first ask the prompt LLM to invent one reusable edit
@@ -75,20 +80,36 @@ AI Toolkit and Musubi share one evaluator image but use isolated Python
 environments. This keeps their incompatible pinned Transformers and Diffusers
 versions from replacing each other while avoiding a Dockerfile per backend.
 
-Scoring uses the noisiest training-objective band so easy late-denoising
-steps cannot collapse the ranking signal. AI Toolkit families sample
-`min_denoising_steps=0` / `max_denoising_steps=250` (t ≈ 750–1000). HiDream
-is tighter because it predicts pixel-space x0 with `noise_scale=8`: T2I
-`max_denoising_steps=50`, edit Musubi `--min_timestep 950`.
+Every image family is scored where the noisy input's signal-to-noise ratio is
+about 0.25 or lower. There the LoRA's learned concept (layout, identity, style)
+decides the prediction. Lower noise mostly measures damage to the base model's
+detail prior, so an average over the full range ranks barely-trained LoRAs first.
 
-Evaluation defaults to four held-out examples per candidate, ten repeats,
-and fixed seeds. `IMAGE_OBJECTIVE_EVAL_SAMPLES`, `IMAGE_OBJECTIVE_EVAL_REPEATS`,
-and `IMAGE_OBJECTIVE_EVAL_SEED` can override those values.
+| Family | Noise band | Cases |
+| --- | --- | --- |
+| Z-Image, Qwen-Image, Krea2 (ComfyUI) | sigma 0.8-1.0 | 8 levels; 8-16 draws per level, so about 512 cases per caption mode per candidate whatever the test size |
+| FLUX.2, Qwen-Image-Edit, MOSS (AI Toolkit) | sigma 0.75-1.0 (`max_denoising_steps=250`) | up to 8 held-out examples; 5-20 repeats each, so about 40 cases per caption mode |
+| HiDream O1 (AI Toolkit, Musubi edit) | sigma 0.33-1.0 (`max_denoising_steps=670`, `--min_timestep 330`) | up to 8 held-out examples; 5-20 repeats each, so about 40 cases per caption mode |
 
-Scores are reproducible and every candidate sees identical noise and
-timesteps. Each case is seeded from the base seed, the held-out sample's
-identity, and how many times that sample has been scored, so the trainers'
-shuffled visit order has no effect. Deterministic CUDA kernels are enabled,
+HiDream O1 noises pixel-space x0 with `noise_scale=8`, so its SNR at sigma is
+(1 - sigma) / (8 sigma). The same SNR range as the latent families therefore
+starts at sigma 0.33.
+
+Per-candidate compute is held fixed so a bigger test split does not add time.
+`IMAGE_OBJECTIVE_EVAL_SAMPLES`, `IMAGE_OBJECTIVE_EVAL_REPEATS`, `IMAGE_EVAL_STRATA`
+and `IMAGE_EVAL_NOISES` override the defaults.
+
+Every image evaluation is seeded from the task's `eval_seed`. The validator
+draws it at random on the task's first evaluation, stores it in
+`image_tasks.eval_seed` and sends it to every deployment as `IMAGE_EVAL_SEED`,
+which both evaluators require. So every candidate and every retry on a task sees
+identical noise and timesteps, and the noise cannot be derived before the task
+is evaluated. The seed is hidden while the task is in flight and published by
+the auditing endpoints once it finishes.
+
+Each case is seeded from the task seed, a hash of the held-out sample's image
+bytes, and how many times that sample has been scored, so neither the test
+images' order nor the trainers' shuffled visit order has an effect. Deterministic CUDA kernels are enabled,
 and per-sample means use exact summation.
 
 Edit scoring weights the region that changed between the held-out source and

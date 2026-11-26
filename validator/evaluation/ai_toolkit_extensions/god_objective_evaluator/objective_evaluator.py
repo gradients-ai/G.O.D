@@ -24,7 +24,7 @@ class GODObjectiveEvaluator(SDTrainer):
         enable_deterministic_kernels()
         super().__init__(process_id, job, config, **kwargs)
         self.evaluation_output = Path(config["evaluation_output"])
-        self.evaluation_seeder = CaseSeeder(int(config.get("evaluation_seed", 42000)))
+        self.evaluation_seeder = CaseSeeder(int(config["evaluation_seed"]))
         mask_dir = config.get("evaluation_mask_dir")
         self.evaluation_mask_dir = Path(mask_dir) if mask_dir else None
         self.evaluation_records = []

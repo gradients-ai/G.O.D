@@ -69,12 +69,21 @@ async def fetch_task_details(task_id: str):
             raise ValueError(f"Unknown task type: {task_type}")
 
 
+def _image_eval_seed(task_details, override: Optional[int]) -> int:
+    """The seed the validator scored the image task with, as published once the task finished."""
+    seed = override if override is not None else getattr(task_details, "eval_seed", None)
+    if seed is None:
+        raise ValueError("The task has no published eval_seed yet; it is shown once the task finishes. Pass --eval_seed.")
+    return seed
+
+
 async def run_evaluation_from_task_id(
     task_id: str,
     gpu_ids: List[int] = [0],
     models: Optional[List[str]] = None,
     hotkeys: Optional[List[str]] = None,
     base_chain: Optional[List[str]] = None,
+    eval_seed: Optional[int] = None,
 ):
     """
     Run model evaluation based on task ID and log the results
@@ -85,6 +94,7 @@ async def run_evaluation_from_task_id(
         models: Optional list of specific models to evaluate instead of using hotkey details
         hotkeys: Optional list of hotkeys to evaluate from task details
         base_chain: Optional repeatable HOTKEY=REPO[,REPO...] entries for continuation adapters
+        eval_seed: Image tasks only. Overrides the task's evaluation seed from the auditing API.
     """
     task_details = await fetch_task_details(task_id)
     logger.info(f"Retrieved task details for task {task_id}")
@@ -129,6 +139,7 @@ async def run_evaluation_from_task_id(
                 training_mode=task_details.training_mode,
                 trigger_word=task_details.trigger_word,
                 gpu_ids=gpu_ids,
+                eval_seed=_image_eval_seed(task_details, eval_seed),
             )
 
             results_dict = results.model_dump()
@@ -298,6 +309,11 @@ Notes:
             "Continuation adapter lineage for a hotkey: HOTKEY=PREVIOUS_REPO "
             "(repeatable). Required for continuation-round PvP fidelity."
         ),
+    )
+    parser.add_argument(
+        "--eval_seed",
+        type=int,
+        help="Image tasks only: evaluation seed. Defaults to the task's published eval_seed.",
     )
     args = parser.parse_args()
 

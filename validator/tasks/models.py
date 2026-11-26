@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
@@ -195,6 +196,10 @@ class ImageRawTask(RawTask):
     model_type: ImageModelType = ImageModelType.FLUX
     training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE
     trigger_word: str | None = None
+    eval_seed: int | None = Field(
+        default=None,
+        description="Seed of the evaluation noise, drawn when the task is first evaluated. Hidden until the task finishes.",
+    )
 
     @model_validator(mode="after")
     def validate_image_training_mode(self) -> "ImageRawTask":

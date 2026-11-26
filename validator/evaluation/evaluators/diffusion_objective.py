@@ -1,6 +1,7 @@
 """Held-out image evaluation using each model's native training objective."""
 
 import gc
+import hashlib
 import json
 import logging
 import math
@@ -49,17 +50,26 @@ MODEL_REPOS = {
     "moss-image-base": "OpenMOSS-Team/MOSS-Image-Base",
 }
 TEMPLATE_ROOT = REPO_ROOT / "core" / "training_templates"
+# Per-candidate compute is held fixed: about CASES_PER_MODE scored cases per caption mode, spread over the held-out
+# samples, so a bigger test split trades repeats for samples instead of adding time.
+CASES_PER_MODE = 40
+MIN_REPEATS = 5
+MAX_REPEATS = 20
+SAMPLE_STEM_HEX_CHARS = 16
 LORA_DOWN_SUFFIXES = (".lora_down.weight", ".lora_A.weight")
 
 # AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise.
-# Keep scoring in the noisiest quartile (t ≈ 750–1000, σ ≈ 0.75–1.0).
+# Score where the noisy input's signal-to-noise ratio is about 0.25 or lower: there the learned concept decides
+# the prediction, while lower noise mostly rewards LoRAs that left the base model's detail prior untouched.
+# Latent flow models: SNR = (1 - sigma) / sigma, so sigma 0.75-1.0 (t 750-1000).
 EVAL_MIN_DENOISING_STEPS = 0
 EVAL_MAX_DENOISING_STEPS = 250
 EVAL_MUSUBI_MIN_TIMESTEP = 750
 EVAL_MUSUBI_MAX_TIMESTEP = 1000
-# HiDream O1 predicts pixel-space x0 with noise_scale=8; push into the noisiest 5%.
-EVAL_HIDREAM_MAX_DENOISING_STEPS = 50
-EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 950
+# HiDream O1 noises pixel-space x0 with noise_scale=8, so SNR = (1 - sigma) / (8 * sigma): the same SNR range is
+# sigma 0.33-1.0. Its noisiest 5% alone is nearly pure noise and cannot separate candidates.
+EVAL_HIDREAM_MAX_DENOISING_STEPS = 670
+EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 330
 
 
 def lora_modules_from_file(path: Path) -> tuple[dict[str, int], dict[str, float], set[str]]:
@@ -99,6 +109,14 @@ def lora_network_spec(path: Path) -> tuple[int, float]:
     return modules_dim[name], modules_alpha[name]
 
 
+def sample_stem(target: bytes, source: bytes | None = None) -> str:
+    """A test sample's file stem: a hash of its image bytes, so evaluation seeds follow image content, not order."""
+    digest = hashlib.sha256(target)
+    if source is not None:
+        digest.update(source)
+    return digest.hexdigest()[:SAMPLE_STEM_HEX_CHARS]
+
+
 def _write_dataset(rows, root: Path, training_mode: str, blank: bool) -> Path:
     targets = root / "targets" if training_mode == "edit" else root
     controls = root / "controls" / "0"
@@ -107,9 +125,13 @@ def _write_dataset(rows, root: Path, training_mode: str, blank: bool) -> Path:
     if training_mode == "edit":
         controls.mkdir(parents=True)
         masks.mkdir()
-    for index, row in enumerate(rows):
+    stems = set()
+    for row in rows:
         _, target, caption, *remainder = row
-        stem = f"{index:06d}"
+        stem = sample_stem(target, remainder[0] if training_mode == "edit" else None)
+        if stem in stems:
+            raise ValueError("Image evaluation dataset contains a duplicate sample")
+        stems.add(stem)
         (targets / f"{stem}.png").write_bytes(target)
         (targets / f"{stem}.txt").write_text("" if blank else caption, encoding="utf-8")
         if training_mode == "edit":
@@ -264,6 +286,16 @@ def _run_objective(
     return _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
 
 
+def repeats_per_sample(samples: int) -> int:
+    """Repeats per held-out sample that keep samples x repeats near CASES_PER_MODE."""
+    return max(MIN_REPEATS, min(MAX_REPEATS, CASES_PER_MODE // max(1, samples)))
+
+
+def musubi_global_seed(seed: int) -> int:
+    """Musubi's --seed must fit numpy's 32-bit range. Per-case noise still follows the full task seed (GOD_EVAL_SEED)."""
+    return seed % 2**32
+
+
 def _hidream_checkpoint(work_dir: Path) -> Path:
     from huggingface_hub import hf_hub_download
 
@@ -404,7 +436,7 @@ def _run_hidream_edit_objective(
             "--save_every_n_epochs",
             "999999",
             "--seed",
-            str(seed),
+            str(musubi_global_seed(seed)),
             "--output_dir",
             str(output_dir),
             "--output_name",
@@ -431,6 +463,8 @@ def evaluate(config: dict, output_path: Path) -> dict:
         work_dir = Path(temporary)
         rows = read_generation_dataset(config["dataset"], work_dir / "test.zip", config["training_mode"])
         rows = rows[: config["sample_limit"]]
+        if config.get("repeats") is None:
+            config["repeats"] = repeats_per_sample(len(rows))
         if not rows:
             raise ValueError("Image objective evaluation dataset is empty")
         conditional = _write_dataset(rows, work_dir / "conditional", config["training_mode"], blank=False)
@@ -504,6 +538,14 @@ def evaluate(config: dict, output_path: Path) -> dict:
     return result
 
 
+def _eval_seed() -> int:
+    """The task's evaluation seed. Required: a fixed default would make the noise predictable."""
+    value = os.environ.get("IMAGE_EVAL_SEED")
+    if not value:
+        raise SystemExit("Image evaluation requires IMAGE_EVAL_SEED")
+    return int(value)
+
+
 def main() -> None:
     configure_eval_logging()
     output = Path(os.environ.get("EVALUATION_RESULTS_PATH", "/aplp/evaluation_results.json"))
@@ -512,9 +554,9 @@ def main() -> None:
         "model_type": os.environ.get("MODEL_TYPE"),
         "training_mode": os.environ.get("IMAGE_TRAINING_MODE", "text-to-image"),
         "models": [value.strip() for value in os.environ.get("MODELS", "").split(",") if value.strip()],
-        "sample_limit": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_SAMPLES", "4")),
-        "repeats": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_REPEATS", "10")),
-        "seed": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_SEED", "42000")),
+        "sample_limit": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_SAMPLES", "8")),
+        "repeats": int(os.environ["IMAGE_OBJECTIVE_EVAL_REPEATS"]) if os.environ.get("IMAGE_OBJECTIVE_EVAL_REPEATS") else None,
+        "seed": _eval_seed(),
     }
     if not config["dataset"] or not config["models"]:
         raise SystemExit("Image objective evaluation requires TEST_SPLIT_URL and MODELS")

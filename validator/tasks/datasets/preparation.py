@@ -252,9 +252,12 @@ async def reject_near_duplicate_dataset(task: AnyTextTypeRawTask, train_dataset:
     logger.info(f"Dataset {task.ds} near-duplicate rate {rate:.3f} is under the limit")
 
 
-def train_test_split_image(dataset_path: str, require_controls: bool = False) -> tuple[str, str]:
+def train_test_split_image(dataset_path: str, require_controls: bool = False, n_test: int | None = None) -> tuple[str, str]:
     """
     Dataset path is a folder containing the images and text files.
+
+    n_test holds out exactly that many pairs, generated on top of the training pairs (synthetic tasks); the pair
+    limit then applies to the training pairs. Without it, TRAIN_TEST_SPLIT_PERCENTAGE of the pairs are held out.
     """
     dataset_path = Path(dataset_path)
 
@@ -285,14 +288,15 @@ def train_test_split_image(dataset_path: str, require_controls: bool = False) ->
                 )
                 dataset_entries[file.stem] = (file, txt_file, source_file)
 
-    if len(dataset_entries) < core_cst.MIN_IMAGE_TEXT_PAIRS:
+    held_out = n_test or 0
+    if len(dataset_entries) - held_out < core_cst.MIN_IMAGE_TEXT_PAIRS:
         raise ValueError(
-            f"Image dataset has {len(dataset_entries)} image/text pairs, "
+            f"Image dataset has {len(dataset_entries) - held_out} training image/text pairs, "
             f"minimum required is {core_cst.MIN_IMAGE_TEXT_PAIRS}"
         )
-    if len(dataset_entries) > core_cst.MAX_IMAGE_TEXT_PAIRS:
+    if len(dataset_entries) - held_out > core_cst.MAX_IMAGE_TEXT_PAIRS:
         raise ValueError(
-            f"Image dataset has {len(dataset_entries)} image/text pairs, "
+            f"Image dataset has {len(dataset_entries) - held_out} training image/text pairs, "
             f"maximum allowed is {core_cst.MAX_IMAGE_TEXT_PAIRS}"
         )
     if require_controls:
@@ -304,7 +308,7 @@ def train_test_split_image(dataset_path: str, require_controls: bool = False) ->
 
     keys = list(dataset_entries.keys())
     random.shuffle(keys)
-    split_idx = ceil(len(keys) * cst.TRAIN_TEST_SPLIT_PERCENTAGE)
+    split_idx = n_test if n_test else ceil(len(keys) * cst.TRAIN_TEST_SPLIT_PERCENTAGE)
     test_keys = set(keys[:split_idx])
     train_keys = set(keys[split_idx:])
 
@@ -970,6 +974,7 @@ async def prepare_image_task(
     image_text_pairs: list[ImageTextPair] | None = None,
     dataset_zip_url: str | None = None,
     training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE,
+    n_test: int | None = None,
 ) -> tuple[str, str]:
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
 
@@ -1020,6 +1025,7 @@ async def prepare_image_task(
         test_zip_path, train_zip_path = train_test_split_image(
             dataset_path=source_dir,
             require_controls=training_mode == ImageTrainingMode.EDIT,
+            n_test=n_test,
         )
 
         test_url = await upload_file_to_minio(

@@ -66,6 +66,8 @@ IMAGE_GEN_CFG_SCALE = 3
 
 MIN_IMAGE_SYNTH_PAIRS = 10
 MAX_IMAGE_SYNTH_PAIRS = 50
+# Held-out pairs generated on top of the training pairs, so a bigger test split never shrinks the training set.
+IMAGE_SYNTH_TEST_PAIRS = 8
 
 MIN_IMAGE_WIDTH = 1024
 MAX_IMAGE_WIDTH = 1024
