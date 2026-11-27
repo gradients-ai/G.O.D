@@ -475,7 +475,8 @@ class TestStandings:
 
         return wire
 
-    @pytest.mark.parametrize("number, advance", [(1, 8), (2, 4), (3, 1)])
+    # Every round here ranks the miners in the same order, so after round 2 only the leader can still finish top.
+    @pytest.mark.parametrize("number, advance", [(1, 8), (2, 1), (3, 1)])
     async def test_the_top_of_the_members_advance_and_the_boss_never_takes_a_slot(self, world, standings, number, advance):
         await world.create_seeds()
         tasks = standings(MINERS)  # the boss's loss (0.1) beats every miner on the same task

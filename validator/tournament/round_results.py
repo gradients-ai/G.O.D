@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from core.logging import get_logger
 from core.models.task_models import QUANT_TASK_TYPES
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.task_models import higher_is_better
 from validator.app.config import Config
@@ -39,6 +40,7 @@ from validator.scoring.models import MinerResultsText
 from validator.scoring.quant_ranking import QuantReferenceUnavailable
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.crown import BossRoundProgress
 from validator.tournament.crown import HeadToHead
 from validator.tournament.crown import HeadToHeadOutcome
 from validator.tournament.crown import crown_verdict
@@ -787,15 +789,13 @@ async def _get_quant_boss_round_outcome(
         f"Quant crown, boss round {completed_round.round_id}: "
         f"{'challenger crowned' if crowned else 'boss retains'}{incomplete} - {verdict.reason}"
     )
-    for head_to_head in boss_round:
-        await update_threshold_adjusted_quality_scores_for_task(
-            task_id=head_to_head.task_id,
-            winner_hotkey=challenger if head_to_head.is_win else boss_hotkey,
-            threshold_percentage=t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT,
-            compared_hotkeys=[boss_hotkey, challenger],
-            psql_db=psql_db,
-            basis=f"the quant crown rule ({head_to_head.describe()})",
-        )
+    await _persist_boss_round_winners(
+        [(head_to_head.task_id, head_to_head) for head_to_head in boss_round],
+        challenger,
+        t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT,
+        "quant",
+        psql_db,
+    )
     return RoundOutcome(winners=[challenger] if crowned else [boss_hotkey])
 
 
@@ -1109,13 +1109,24 @@ async def round_head_to_heads(tournament: TournamentData, challenger_hotkey: str
 
 async def get_planned_runner_up(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> str | None:
     """Third place of a seeded text or planned image tournament: the next miner after the challenger in the cumulative
-    standings after round 3, the order that picked the round's winner. None when round 3 or another ranked miner is missing."""
+    standings after round 3, the order that picked the round's winner; when round 3's viability cut left the challenger
+    alone, the best other miner of the round-2 advance set. None when round 3 or another ranked miner is missing."""
     final_miner_round = t_cst.round_plan(tournament.tournament_type)[-1].round_number
     rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
     played = next((round_data for round_data in rounds if round_data.round_number == final_miner_round), None)
     if played is None:
         return None
     ordered = await planned_round_ordered_hotkeys(played, await get_tournament_tasks(played.round_id, psql_db), psql_db)
+    third = next((hotkey for hotkey in ordered if hotkey not in (challenger_hotkey, EMISSION_BURN_HOTKEY)), None)
+    if third is not None:
+        return third
+    # The round-3 viability cut left the challenger alone in round 3: third place comes from the R1+R2 standings among the
+    # miners that advanced from round 2, re-ranked within them (as in compression).
+    round_two = next((round_data for round_data in rounds if round_data.round_number == 2), None)
+    if round_two is None:
+        return None
+    advance = next(spec.advance for spec in t_cst.round_plan(tournament.tournament_type) if spec.round_number == 2)
+    ordered = await _round_two_advance_set_ordered_hotkeys(tournament.tournament_id, round_two, advance, psql_db)
     return next((hotkey for hotkey in ordered if hotkey not in (challenger_hotkey, EMISSION_BURN_HOTKEY)), None)
 
 
@@ -1304,6 +1315,90 @@ async def _get_image_boss_round_outcome(
 
     await _persist_boss_round_winners(boss_round, challenger, t_cst.IMAGE_CROWN_WIN_MARGIN, "image", psql_db)
     return RoundOutcome(winners=[challenger] if verdict.crowned else [boss_hotkey])
+
+
+# The progress of a boss round by the set of its finished tasks, so the pass every cycle does not redo the paired tests
+# until another task finishes. A finished task's results do not change.
+_BOSS_ROUND_PROGRESS: dict[tuple[str, tuple[str, ...]], BossRoundProgress] = {}
+
+
+async def boss_round_progress(
+    tournament: TournamentData, boss_round: TournamentRoundData, psql_db: PSQLDB
+) -> BossRoundProgress | None:
+    """The crown rule on a planned image or compression boss round that has not finished, from the tasks that have.
+
+    A task counts as decided only when it finished and both sides have a valid score on it: a task that errored, whose
+    evaluation is missing, or on which a side has no score is left undecided (it counts as a win), so only results can put the
+    crown out of reach. None when the round has no challenger or a finished task has an evaluation fault (both sides trained
+    and neither has a result); the round then takes its ordinary course.
+    """
+    round_tasks = await get_tournament_tasks(boss_round.round_id, psql_db)
+    challenger = await _boss_round_challenger(boss_round, round_tasks, psql_db)
+    if challenger is None:
+        return None
+    task_objects = {task.task_id: await get_task(task.task_id, psql_db) for task in round_tasks}
+    finished = tuple(
+        sorted(
+            str(task_id)
+            for task_id, task_object in task_objects.items()
+            if task_object is not None and task_object.status == TaskStatus.SUCCESS.value
+        )
+    )
+    cache_key = (boss_round.round_id, finished)
+    if cache_key in _BOSS_ROUND_PROGRESS:
+        return _BOSS_ROUND_PROGRESS[cache_key]
+    is_quant = tournament.tournament_type == TournamentType.QUANT
+    try:
+        earlier_rounds = (
+            await quant_round_head_to_heads(tournament.tournament_id, challenger, psql_db)
+            if is_quant
+            else await round_head_to_heads(tournament, challenger, psql_db)
+        )
+        decided: list[tuple[str, HeadToHead]] = []
+        settled: list[tuple[str, HeadToHead]] = []
+        unfinished: list[str] = []
+        for task in round_tasks:
+            task_object = task_objects[task.task_id]
+            if task_object is None or task_object.status != TaskStatus.SUCCESS.value:
+                unfinished.append(str(task.task_id))
+                continue
+            if is_quant:
+                label = await _quant_boss_round_label(task.task_id, task_object, psql_db)
+                head_to_head = await quant_task_head_to_head(task.task_id, label, task_object, challenger, psql_db)
+            else:
+                head_to_head = await _task_head_to_head(
+                    tournament.tournament_type,
+                    task.task_id,
+                    _image_boss_round_label(task_object),
+                    task_object.task_type,
+                    challenger,
+                    psql_db,
+                )
+            if is_valid_score(head_to_head.boss_score) and is_valid_score(head_to_head.challenger_score):
+                decided.append((str(task.task_id), head_to_head))
+                settled.append((str(task.task_id), head_to_head))
+            elif head_to_head.is_win:
+                settled.append((str(task.task_id), head_to_head))
+    except CrownEvaluationFault as fault:
+        logger.warning(f"Boss round {boss_round.round_id}: evaluation fault on {fault.task_ids}; no early stop check")
+        return None
+    verdict = crown_verdict(earlier_rounds + [head_to_head for _, head_to_head in decided])
+    progress = BossRoundProgress(
+        challenger=challenger, verdict=verdict, decided=decided, settled=settled, unfinished_task_ids=unfinished
+    )
+    _BOSS_ROUND_PROGRESS[cache_key] = progress
+    return progress
+
+
+async def persist_decided_boss_round_winners(
+    tournament: TournamentData, progress: BossRoundProgress, psql_db: PSQLDB
+) -> None:
+    """Store the winner of every boss-round task decided so far, as the round's own resolution does."""
+    if tournament.tournament_type == TournamentType.QUANT:
+        margin, rule = t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT, "quant"
+    else:
+        margin, rule = t_cst.IMAGE_CROWN_WIN_MARGIN, "image"
+    await _persist_boss_round_winners(progress.settled, progress.challenger, margin, rule, psql_db)
 
 
 async def get_knockout_winners(
@@ -1575,6 +1670,12 @@ async def find_groups_with_no_valid_scores(
     silent `continue` in the winner functions below would just drop the group and advance a
     smaller field. Callers use this to refuse advancement instead.
 
+    A group whose every challenger's own training failed is not flagged when the boss has a valid score on the same task:
+    that score shows the task and the trainers worked, so a failed training is a result (the miner lost), not lost data.
+    This is what lets a lone round-3 survivor whose training fails end the tournament with the boss retained. Without the
+    boss's score, or with any challenger whose training did not fail, a group with no usable challenger score is flagged:
+    its evaluation is missing, or the failure may be the infrastructure's.
+
     Knockout rounds are decided per-pair rather than per-group, so they are not covered here.
     """
     if completed_round.round_type != RoundType.GROUP:
@@ -1596,10 +1697,17 @@ async def find_groups_with_no_valid_scores(
         challengers = {participant.hotkey for participant in participants} - {EMISSION_BURN_HOTKEY}
         miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
         ranked_results = calculate_miner_ranking_and_scores(miner_results) if miner_results else []
-        has_valid_score = any(
-            result.hotkey in challengers and result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
+        scored = {
+            result.hotkey
             for result in ranked_results
-        )
+            if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
+        }
+        has_valid_score = bool(challengers & scored)
+
+        if not has_valid_score and challengers and EMISSION_BURN_HOTKEY in scored:
+            statuses = await get_training_status_for_task_and_hotkeys(task.task_id, sorted(challengers), psql_db)
+            if all(statuses.get(hotkey) == TrainingStatus.FAILURE for hotkey in challengers):
+                continue
 
         if not has_valid_score:
             empty_groups.append(
@@ -1969,6 +2077,10 @@ def _best_margin(sums: dict[str, int], hotkey: str) -> int:
 
     Zero or below means the member can finish top or joint top. R1+R2 rank sums are ``sums``; every
     permutation of R3 ranks is tried, so the best case is exact whatever the tie-break.
+
+    Only rank sums are compared. The real standings also sort a miner with a missing result behind every clean miner, so a
+    member with a missing result can be kept although it cannot finish top unless every clean miner also fails. That errs
+    towards keeping a miner, never towards dropping one that could still win.
     """
     others = [other for other in sums if other != hotkey]
     members = [hotkey, *others]
@@ -2056,12 +2168,12 @@ async def quant_cumulative_winners(
 
 
 async def _round_two_advance_set_ordered_hotkeys(
-    tournament_id: str, round_two: TournamentRoundData, psql_db: PSQLDB
+    tournament_id: str, round_two: TournamentRoundData, round_two_advance: int, psql_db: PSQLDB
 ) -> list[str]:
-    """R1+R2 standings among the miners that advanced from round 2 (its top QUANT_ROUND_TWO_ADVANCE, including any the round-3
+    """R1+R2 standings among the miners that advanced from round 2 (its top ``round_two_advance``, including any the round-3
     viability cut then dropped), re-ranked within that cohort."""
     ordered = await _quant_cumulative_ordered_hotkeys(tournament_id, round_two, psql_db)
-    advanced = set(ordered[: t_cst.QUANT_ROUND_TWO_ADVANCE])
+    advanced = set(ordered[:round_two_advance])
     standings = await _cumulative_standings(tournament_id, round_two, psql_db, advanced)
     return [standing.hotkey for standing in standings]
 
@@ -2111,7 +2223,9 @@ async def get_quant_round_runner_up(
             f"Tournament {tournament_id}: round {pre_boss.round_number} names no miner after {challenger_hotkey}; third place "
             f"comes from the R1+R2 standings of the miners that advanced from round 2"
         )
-    return runner_up(await _round_two_advance_set_ordered_hotkeys(tournament_id, round_two, psql_db))
+    return runner_up(
+        await _round_two_advance_set_ordered_hotkeys(tournament_id, round_two, t_cst.QUANT_ROUND_TWO_ADVANCE, psql_db)
+    )
 
 
 async def _get_quant_group_winners(
@@ -2161,7 +2275,9 @@ async def get_planned_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], tournament_type: TournamentType, psql_db: PSQLDB
 ) -> list[str]:
     """Winners of a seeded text or planned image tournament's single-group round: the top advance of the tournament's round
-    plan among its members by planned_round_ordered_hotkeys."""
+    plan among its members by planned_round_ordered_hotkeys. After round 2 of a text or image tournament the round-3
+    viability cut then drops every miner that can no longer finish top or joint top (round3_viable_winners), as in
+    compression."""
     advance = next(
         spec.advance for spec in t_cst.round_plan(tournament_type) if spec.round_number == completed_round.round_number
     )
@@ -2170,6 +2286,8 @@ async def get_planned_group_winners(
     logger.info(
         f"advancing top {len(winners)} of {tournament_type.value} round {completed_round.round_number}: {winners}"
     )
+    if completed_round.round_number == 2:
+        return await round3_viable_winners(completed_round.tournament_id, completed_round, winners, psql_db)
     return winners
 
 

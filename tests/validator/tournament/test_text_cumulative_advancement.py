@@ -18,6 +18,7 @@ from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
+from validator.tournament.models import TrainingStatus
 
 
 TID = "t"
@@ -108,11 +109,13 @@ async def test_round_two_cuts_by_average_rank_not_by_the_round_two_task(tourname
     round_two_alone = await rr._quant_ordered_hotkeys(await rr.get_tournament_tasks("r2", None), None, cohort=set(miners))
     assert round_two_alone[:4] == ["E", "F", "A", "B"]
 
-    winners = await _winners(2)
+    ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
 
     # Ties on average rank go to the smaller summed gap to the best (R1 best 1.0, R2 best 1.0), not to the round-2 winner:
     # B (0.1+0.3)=0.4 beats E (1.0+0.0)=1.0 at rank 3, and C (0.2+0.4)=0.6 beats F (1.1+0.1)=1.2 at rank 4.
-    assert winners == ["A", "B", "E", "C"]
+    assert ordered[:4] == ["A", "B", "E", "C"]
+    # C cannot catch the leader over a third round, so the round-3 viability cut drops it from those four.
+    assert await _winners(2) == ["A", "B", "E"]
 
 
 @pytest.mark.asyncio
@@ -158,7 +161,8 @@ async def test_the_boss_is_never_ranked_into_a_slot_or_into_the_miners_ranks(tou
 
     winners = await _winners(2)
 
-    assert winners == ["A", "B", "C", "D"]
+    # Same order in both rounds: after the top-4 cut only the leader can still finish top.
+    assert winners == ["A"]
     assert EMISSION_BURN_HOTKEY not in winners
     assert await _winners(1) == miners
 
@@ -177,4 +181,93 @@ async def test_third_place_is_the_runner_up_of_the_cumulative_standings(tourname
     # Round 3's task alone ranks C, B, A; cumulative: A (1+1+3)/3, B (2+2+2)/3, C (3+3+1)/3. Challenger A, third B.
     tournament({1: cohort, 2: cohort, 3: ["C", "B", "A"]}, {1: cohort, 2: cohort, 3: cohort})
 
-    assert await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None) == "B"
+    text = TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT)
+    assert await rr.get_planned_runner_up(text, "A", None) == "B"
+
+
+@pytest.mark.asyncio
+async def test_round_two_drops_advancing_miners_that_can_no_longer_finish_top(tournament):
+    miners = list("ABCDE")
+    # R1 ranks A1 B2 C3 D4 E5, R2 ranks A1 C2 E3 D4 B5: sums A2 C5 B7 D8 E8.
+    # D and E tie on 8 for the fourth slot; after the top-4 cut
+    # only A can still finish top or joint top over three rounds.
+    tournament({1: miners, 2: ["A", "C", "E", "D", "B"]}, {1: miners, 2: miners})
+    ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
+    assert ordered[:3] == ["A", "C", "B"]
+
+    assert await _winners(2) == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_round_two_keeps_every_miner_that_can_still_finish_top(tournament):
+    miners = list("ABCDEF")
+    # R1 ranks A1 B2 C3 D4, R2 ranks B1 A2 D3 C4: sums A3 B3 C7 D7. Only A and B can still finish top or joint top.
+    tournament({1: miners, 2: ["B", "A", "D", "C", "E", "F"]}, {1: miners, 2: miners})
+
+    assert sorted(await _winners(2)) == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_round_one_and_three_are_not_viability_filtered(tournament, monkeypatch):
+    miners = list("ABCDEFGHI")
+    tournament({1: miners, 2: miners, 3: miners}, {1: miners, 2: miners, 3: miners})
+    cut = AsyncMock(side_effect=lambda *args: args[2])
+    monkeypatch.setattr(rr, "round3_viable_winners", cut)
+
+    assert await _winners(1) == miners[:8]
+    assert await _winners(3) == ["A"]
+    cut.assert_not_awaited()
+    await _winners(2)
+    cut.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_round_two_cuts_to_the_top_four_before_viability(tournament):
+    miners = list("ABCDE")
+    # Every miner sums 6 over R1+R2, so all five are level and all stay viable; the top-4 cut alone removes one.
+    tournament({1: miners, 2: list(reversed(miners))}, {1: miners, 2: miners})
+
+    winners = await _winners(2)
+
+    assert len(winners) == 4 and set(winners) < set(miners)
+
+
+@pytest.mark.asyncio
+async def test_a_round_two_field_smaller_than_four_all_advance_when_all_are_viable(tournament):
+    miners = list("ABC")
+    tournament({1: miners, 2: list(reversed(miners))}, {1: miners, 2: miners})
+
+    assert sorted(await _winners(2)) == miners
+
+
+@pytest.mark.asyncio
+async def test_the_third_place_fallback_uses_the_round_two_advance_count(tournament, monkeypatch):
+    miners = list("ABCDE")
+    tournament({1: miners, 2: miners, 3: ["A"]}, {1: miners, 2: miners, 3: ["A"]})
+    advance_set = AsyncMock(return_value=["A", "B"])
+    monkeypatch.setattr(rr, "_round_two_advance_set_ordered_hotkeys", advance_set)
+
+    await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None)
+
+    assert advance_set.await_args.args[2] == next(s.advance for s in t_cst.TEXT_ROUND_PLAN if s.round_number == 2) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_lone_round_three_survivor_whose_training_failed_still_advances_and_the_round_is_not_refused(
+    tournament, monkeypatch
+):
+    # Round 3's only challenger has no result on the round's task (it ranks last there) but is still the challenger; the
+    # no-score guard accepts the round because that training failed, so the tournament moves on to the crown check.
+    tournament({1: list("ABCD"), 2: list("ABCD"), 3: []}, {1: list("ABCD"), 2: list("ABCD"), 3: ["A"]})
+    monkeypatch.setattr(rr, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value={"A": TrainingStatus.FAILURE}))
+
+    assert await _winners(3) == ["A"]
+    assert await rr.find_groups_with_no_valid_scores(_round(3), None) == []
+
+
+@pytest.mark.asyncio
+async def test_a_lone_round_three_survivor_with_no_evaluation_is_still_refused(tournament, monkeypatch):
+    tournament({1: list("ABCD"), 2: list("ABCD"), 3: []}, {1: list("ABCD"), 2: list("ABCD"), 3: ["A"]})
+    monkeypatch.setattr(rr, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value={"A": TrainingStatus.SUCCESS}))
+
+    assert [group.group_id for group in await rr.find_groups_with_no_valid_scores(_round(3), None)] == ["g3"]

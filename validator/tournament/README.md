@@ -53,24 +53,24 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 1. **Seeds.** When the first round is created, the four text seeds are created and the boss trains them with its pinned code ([Seeds](#seeds)).
 2. **Round 1.** The round attaches `text_r1`, so miners train it in parallel with the boss.
 3. **Entry gates.** Before round 2 is built, the advancing miners pass the duplicate-submission gate and a code review. A disqualified miner is replaced by the next miner in the round-1 standings, who is checked too. A duplicate flag, or a review that needs an operator, holds the tournament until it is resolved.
-4. **Rounds 2 and 3.** Each attaches its seed task and is played by one group.
+4. **Rounds 2 and 3.** Each attaches its seed task and is played by one group. After the round-2 cut, the viability cut drops any miner that cannot finish top or joint top after round 3, repeating among the remaining miners with ranks retaken within them until it drops no one.
 5. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
 6. **Boss round, stage one.** The continuous seed is attached and one GRPO and one DPO task are drawn. Who trains each task is in the [text guide](../../docs/miner_text.md#the-boss-round).
 7. **Boss round, stage two.** The big instruct task is created last, under the same early-stop check.
 8. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks as compression. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
+Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks and the same round-3 viability cut as compression. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
 
 ## Image tournament flow
 
 1. **Round 1.** One group plays one text-to-image task, with the boss assigned to it alongside the miners. Its model type is drawn from `ROUND_ONE_IMAGE_MODEL_TYPES` and its size is capped at `ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS` pairs. The best 8 miners advance (`IMAGE_ROUND_PLAN`).
 2. **Entry gates.** As in the text flow, before round 2 is built.
-3. **Rounds 2 and 3.** Each is one group on one task, with the boss assigned to it: a slot drawn from `ROUND_TWO_IMAGE_TASK_SPECS` (top 4) in round 2, a slot drawn from `FINAL_ROUND_IMAGE_TASK_SPECS` (top 1) in round 3. A slot is a (model type, training mode) pair.
+3. **Rounds 2 and 3.** Each is one group on one task, with the boss assigned to it: a slot drawn from `ROUND_TWO_IMAGE_TASK_SPECS` (top 4) in round 2, a slot drawn from `FINAL_ROUND_IMAGE_TASK_SPECS` (top 1) in round 3. A slot is a (model type, training mode) pair. After the round-2 cut, the viability cut drops any miner that cannot finish top or joint top after round 3, repeating among the remaining miners with ranks retaken within them until it drops no one.
 4. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
 5. **Boss round.** Four tasks are created together: `IMAGE_BOSS_ROUND_TASKS_PER_MODE` of each training mode, two edit and two text-to-image, drawn from the `FINAL_ROUND_IMAGE_TASK_SPECS` slots other than round 3's. The round-3 slot is read from round 3's task when the boss round is created; a rerun keeps the slots the round already holds and draws only for missing tasks. The boss and the challenger both train them.
 6. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks as text.
+Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks and the same round-3 viability cut as text and compression.
 
 The image tournament has no seed tasks: the boss trains each round's task in the same window as the miners. Task details are in the [image guide](../../docs/miner_image.md#rounds).
 
@@ -80,7 +80,7 @@ The image tournament has no seed tasks: the boss trains each round's task in the
 2. **Seeds.** When the first round is created, the seven compression seeds are created. Each is held until the text boss's model for it has landed, then prepped. None is trained before its round ([Seeds](#seeds)).
 3. **Round 1.** A freeform task on the text boss's round-1 model. All enrolled miners and the boss train it.
 4. **Entry gates.** As in the text flow, before round 2 is built.
-5. **Round 2.** A fixed task on the round-2 model. After the cut, the viability cut drops any miner that cannot finish top or joint top after round 3.
+5. **Round 2.** A fixed task on the round-2 model. After the cut, the viability cut drops any miner that cannot finish top or joint top after round 3, repeating among the remaining miners with ranks retaken within them until it drops no one.
 6. **Round 3.** A freeform task on the round-3 model.
 7. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
 8. **Boss round.** The four boss-round seeds are attached, and the boss and the challenger train them ([Seeds](#seeds)). The tasks are in the [compression guide](../../docs/miner_compression.md#the-boss-round).
@@ -158,6 +158,8 @@ For a fixed compression task scored on two GPU SKUs, the challenger's per-exampl
 
 Every one of rounds 1-3 runs in full. The rounds decide second and third place, and each round's task is one of the crown's head-to-heads, so a round is played even with one miner left. The crown is checked once the round-3 cut leaves the challenger. The rule is applied to its three head-to-heads, with the four boss-round tasks counted as wins. If the crown is out of reach, no boss round is created and the tournament ends with the boss retained.
 
+In an image or compression boss round the four tasks run side by side (image creates them together; the compression seeds exist from the start of the tournament and the round attaches them). After each task finishes, the crown rule is applied to rounds 1-3 and the boss-round tasks finished so far, with the tasks still to come counted as wins. A task counts as finished only when both the boss and the challenger have a valid score on it; a task that errored, has no evaluation or has no score on a side is not counted as a non-win. Once the crown is out of reach, the tournament ends with the boss retained and no further training is started: pending trainings are failed and the scheduler skips the pending rows of a completed final round of a decided tournament, a task that has not started is failed, and its seed row is marked failed. A training that is already running is left to finish and its result is not read, since the trainers have no cancel path. Pending rows of a completed final round of a decided tournament are failed on the scheduler's cycle, and a task still looking for nodes is failed when the scheduler reaches it, so every task ends. Reversing an early-stopped boss round by hand is not supported: its seed roles are marked failed, and re-attaching a failed role plays it without the boss and would draw new tasks. The decided tasks keep their stored winners, and the placements are the same as for the early stop after round 3.
+
 In the text boss round the big task runs last. It is created only if the crown is in reach after the continuous, GRPO and DPO tasks.
 
 ### Placements
@@ -177,7 +179,7 @@ One compression tournament, `tourn_552dac324b78e7bf_20261123`, does not pay its 
 | Image | The next miner after the challenger in the cumulative standings after round 3. |
 | Compression | The next miner after the challenger in the cumulative standings after round 3. |
 
-When the compression viability cut left the challenger alone in round 3, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
+When the viability cut left the challenger alone in round 3, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
 
 How the paid places split a tournament's emission is in [Payouts](../../docs/miner.md#payouts).
 

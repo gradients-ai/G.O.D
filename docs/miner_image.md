@@ -36,12 +36,13 @@ Each round is one task. Every miner in the round, and the boss, trains the same 
 | Round | Slots | Pairs | Advance |
 | --- | --- | --- | --- |
 | R1 | text-to-image: Z-Image, FLUX.2 Klein 4B, MOSS-Image-Base | at most 30 | top 8 |
-| R2 | text-to-image: Qwen-Image, Krea 2, HiDream-O1. Edit: Qwen-Image-Edit-2511, HiDream-O1 | at most 50 | top 4 |
+| R2 | text-to-image: Qwen-Image, Krea 2, HiDream-O1. Edit: Qwen-Image-Edit-2511, HiDream-O1 | at most 50 | top 4, then the viability cut |
 | R3 | the six [final slots](#the-boss-round) | at most 50 | top 1 |
 
 Source: [`IMAGE_ROUND_PLAN`, `ROUND_ONE_IMAGE_MODEL_TYPES`, `ROUND_TWO_IMAGE_TASK_SPECS`, `FINAL_ROUND_IMAGE_TASK_SPECS`](../validator/tournament/constants.py).
 
 - Round 1 advances on its task, ordered by [task score](#scoring). Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners.
+- Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. The check repeats among the remaining miners, with ranks retaken within them, until it no longer drops anyone. Round 3 can therefore have fewer miners than advanced from round 2, down to one.
 - With fewer miners than slots, all advance.
 - A miner with no valid result on a task ranks behind every miner with one on it. A miner missing a result in any round sorts below every miner with a result in all rounds.
 - Ties on average rank are broken as in [Advancing](miner.md#advancing).
@@ -59,6 +60,8 @@ The challenger and the boss both train four tasks: two edit and two text-to-imag
 | Text-to-image | Krea 2, HiDream-O1, MOSS-Image-Base |
 
 Source: [`FINAL_ROUND_IMAGE_TASK_SPECS`, `IMAGE_BOSS_ROUND_TASKS_PER_MODE`](../validator/tournament/constants.py).
+
+The round ends as soon as the crown is out of reach: after each task finishes, the [crown rule](miner.md#the-boss-and-the-crown) is applied to rounds 1-3 and the finished boss-round tasks, with the tasks still to come counted as wins. If the challenger can no longer be crowned, the boss keeps the crown and no further training is started. A task counts only when both the boss and the challenger have a valid score on it.
 
 All four tasks are created with the round. Each task draws a base model of its family and a data set.
 

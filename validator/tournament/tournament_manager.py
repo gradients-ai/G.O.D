@@ -126,11 +126,13 @@ from validator.tournament.registration_lint import check_registration_lint
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.round_results import CrownEvaluationFault
+from validator.tournament.round_results import boss_round_progress
 from validator.tournament.round_results import find_groups_with_no_valid_scores
 from validator.tournament.round_results import get_planned_runner_up
 from validator.tournament.round_results import get_quant_pre_boss_runner_up
 from validator.tournament.round_results import get_quant_round_runner_up
 from validator.tournament.round_results import get_round_winners
+from validator.tournament.round_results import persist_decided_boss_round_winners
 from validator.tournament.round_results import plays_round_plan
 from validator.tournament.round_results import quant_round_head_to_heads
 from validator.tournament.round_results import round_head_to_heads
@@ -142,6 +144,7 @@ from validator.tournament.seed_tasks import process_tournament_seed_tasks
 from validator.tournament.seed_tasks import retire_unattached_quant_seeds
 from validator.tournament.seed_tasks import seed_creation_order
 from validator.tournament.seed_tasks import seed_halt_reason
+from validator.tournament.seed_tasks import stop_unfinished_boss_round_tasks
 from validator.tournament.task_creator import MissingBossRoundSeeds
 from validator.tournament.task_creator import create_boss_round_decider_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
@@ -693,9 +696,12 @@ async def _complete_without_boss_round(
     reason: str,
     config: Config,
     psql_db: PSQLDB,
+    boss_round: TournamentRoundData | None = None,
 ) -> None:
     """End a quant, seeded text or planned image tournament after round 3 with the boss retained: the last contender can no
-    longer be crowned, so no boss round is created and nothing is attached or dispatched for it.
+    longer be crowned, so no boss round is created and nothing is attached or dispatched for it. ``boss_round`` is given when
+    the crown went out of reach inside a boss round that was already created (stop_unreachable_boss_round): the contender is
+    then eliminated in that round, and ``completed_round`` is still round 3.
 
     Text: the continuous lineage is carried forward first (its seed was never attached). Quant: the quant seeds no round
     attached are retired untrained (retire_unattached_quant_seeds). Image has no seeds and no lineage, so
@@ -705,7 +711,8 @@ async def _complete_without_boss_round(
     steps as a retained boss run. _complete_with_defending_champion only sets the winner and uploads the boss's
     repository, so it leaves the placements as they are.
     """
-    logger.warning(f"Tournament {tournament.tournament_id} ends after round {completed_round.round_number}: {reason}")
+    where = f"in boss round {boss_round.round_number}" if boss_round else f"after round {completed_round.round_number}"
+    logger.warning(f"Tournament {tournament.tournament_id} ends {where}: {reason}")
     if tournament.tournament_type == TournamentType.QUANT:
         retired = await retire_unattached_quant_seeds(tournament.tournament_id, config)
         logger.info(f"Tournament {tournament.tournament_id}: quant seeds retired: {[role.value for role in retired]}")
@@ -714,7 +721,8 @@ async def _complete_without_boss_round(
         await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
         third_place = await get_planned_runner_up(tournament, challenger_hotkey, psql_db)
     # Like a challenger beaten in a boss round, it is out: it must not keep drawing participation weight.
-    await eliminate_tournament_participants(tournament.tournament_id, completed_round.round_id, [challenger_hotkey], psql_db)
+    eliminated_in = boss_round or completed_round
+    await eliminate_tournament_participants(tournament.tournament_id, eliminated_in.round_id, [challenger_hotkey], psql_db)
     await _record_boss_rank_comparisons(tournament.tournament_id, challenger_hotkey, third_place, psql_db)
     await update_tournament_placements(tournament.tournament_id, EMISSION_BURN_HOTKEY, challenger_hotkey, third_place, psql_db)
     await _complete_with_defending_champion(
@@ -727,6 +735,45 @@ async def _complete_without_boss_round(
             f"second place {challenger_hotkey}, third place {third_place}."
         ),
     )
+
+
+async def stop_unreachable_boss_round(
+    tournament: TournamentData, boss_round: TournamentRoundData, config: Config, psql_db: PSQLDB
+) -> bool:
+    """End a planned image or compression tournament as soon as its boss round can no longer crown the challenger.
+
+    Rounds 1-3 and the boss-round tasks finished so far are read on the crown rule, every task still to come counting as a
+    win (boss_round_progress, crown_verdict). While the crown is within reach, or nothing is left to stop, this does nothing.
+    Once it is out of reach, the work still to come is stopped (stop_unfinished_boss_round_tasks: pending trainings are never
+    dispatched, an unstarted task is failed, a training already running is left to finish and not read), the winners of the
+    decided tasks are stored, the round is completed and the tournament ends with the boss retained exactly as when no boss
+    round is played (_complete_without_boss_round). A task that errored, has no evaluation or has no score on a side is not
+    decided, so only results stop a round. Text stages its boss round and never creates the tasks it will not need. Returns
+    whether the tournament was ended.
+    """
+    if boss_round.status != RoundStatus.ACTIVE or not boss_round.is_final_round or tournament.winner_hotkey:
+        return False
+    if tournament.tournament_type == TournamentType.TEXT or not await plays_round_plan(tournament, psql_db):
+        return False
+    progress = await boss_round_progress(tournament, boss_round, psql_db)
+    if progress is None or not progress.unfinished_task_ids or progress.verdict.can_still_be_crowned:
+        return False
+    rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
+    last_miner_round_number = _last_miner_round_number(tournament, True)
+    last_miner_round = next((r for r in rounds if r.round_number == last_miner_round_number), None)
+    if last_miner_round is None or boss_round.round_number != last_miner_round_number + 1:
+        return False
+    reason = (
+        f"{progress.challenger} cannot be crowned after {progress.verdict.decided} of the {t_cst.CROWN_TASKS} tasks: "
+        f"{progress.verdict.reason}"
+    )
+    await stop_unfinished_boss_round_tasks(progress.unfinished_task_ids, config)
+    await persist_decided_boss_round_winners(tournament, progress, psql_db)
+    await update_round_status(boss_round.round_id, RoundStatus.COMPLETED, psql_db)
+    await _complete_without_boss_round(
+        tournament, last_miner_round, progress.challenger, reason, config, psql_db, boss_round=boss_round
+    )
+    return True
 
 
 async def _record_boss_rank_comparisons(
@@ -1994,6 +2041,15 @@ async def process_active_tournaments(config: Config):
                         else:
                             current_round = rounds[-1]
                             if current_round.status == RoundStatus.ACTIVE:
+                                try:
+                                    if await stop_unreachable_boss_round(tournament, current_round, config, config.psql_db):
+                                        continue
+                                except Exception as e:
+                                    # The early stop is an optimisation: whatever goes wrong in it, the round completes the
+                                    # ordinary way.
+                                    logger.error(
+                                        f"Boss round early-stop check failed for {tournament.tournament_id}: {e}", exc_info=True
+                                    )
                                 if await check_if_round_is_completed(current_round, config):
                                     await update_round_status(current_round.round_id, RoundStatus.COMPLETED, config.psql_db)
                                     logger.info(

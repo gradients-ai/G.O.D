@@ -28,6 +28,7 @@ from validator.tournament.models import BossRankComparison
 from validator.tournament.models import GroupRound
 from validator.tournament.models import HotkeyTaskParticipation
 from validator.tournament.models import PendingDecoderRelease
+from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TaskTrainingAssignment
 from validator.tournament.models import TournamentData
@@ -1421,6 +1422,75 @@ async def _trainings_from_rows(results: list, psql_db: PSQLDB, connection) -> li
     return tournament_tasks
 
 
+def _task_of_decided_final_round(training_table: str) -> str:
+    """SQL condition: the row's task belongs to a completed final round of a tournament that has a winner, so no training of
+    it is worth starting (a boss round that ended early leaves unfinished tasks behind)."""
+    return f"""EXISTS (
+                SELECT 1
+                FROM {cst.TOURNAMENT_TASKS_TABLE} tt
+                JOIN {cst.TOURNAMENT_ROUNDS_TABLE} r ON r.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
+                JOIN {cst.TOURNAMENTS_TABLE} t ON t.{cst.TOURNAMENT_ID} = r.{cst.TOURNAMENT_ID}
+                WHERE tt.{cst.TASK_ID} = {training_table}.{cst.TASK_ID}
+                  AND r.{cst.IS_FINAL_ROUND}
+                  AND r.{cst.ROUND_STATUS} = '{RoundStatus.COMPLETED.value}'
+                  AND t.{cst.WINNER_HOTKEY} IS NOT NULL
+            )"""
+
+
+async def is_task_of_decided_final_round(task_id: str, psql_db: PSQLDB) -> bool:
+    """Whether the task belongs to a completed final round of a tournament that has a winner: a boss round that ended early
+    leaves such tasks unfinished, and none is to be started."""
+    async with await psql_db.connection() as connection:
+        found = await connection.fetchval(
+            f"""
+            SELECT 1
+            FROM {cst.TOURNAMENT_TASKS_TABLE} tt
+            JOIN {cst.TOURNAMENT_ROUNDS_TABLE} r ON r.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
+            JOIN {cst.TOURNAMENTS_TABLE} t ON t.{cst.TOURNAMENT_ID} = r.{cst.TOURNAMENT_ID}
+            WHERE tt.{cst.TASK_ID} = $1 AND r.{cst.IS_FINAL_ROUND}
+              AND r.{cst.ROUND_STATUS} = '{RoundStatus.COMPLETED.value}' AND t.{cst.WINNER_HOTKEY} IS NOT NULL
+            LIMIT 1
+            """,
+            task_id,
+        )
+    return found is not None
+
+
+async def fail_pending_training_row(task_id: str, hotkey: str, psql_db: PSQLDB) -> bool:
+    """Mark a task-hotkey row FAILURE only while it is still PENDING, so a row a trainer has just started or finished is
+    never overwritten. Returns whether the row was changed."""
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
+            SET {cst.TRAINING_STATUS} = $3, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.TRAINING_STATUS} = $4
+            """,
+            task_id,
+            hotkey,
+            TrainingStatus.FAILURE,
+            TrainingStatus.PENDING,
+        )
+    return result.endswith(" 1")
+
+
+async def fail_pending_rows_of_decided_final_rounds(psql_db: PSQLDB) -> int:
+    """Mark every PENDING row of a completed final round of a tournament that has a winner FAILURE, so a run that failed and
+    went back to PENDING after the round ended does not keep its task in TRAINING. Returns the number of rows changed."""
+    table = cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {table}
+            SET {cst.TRAINING_STATUS} = $1, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TRAINING_STATUS} = $2 AND {_task_of_decided_final_round(table)}
+            """,
+            TrainingStatus.FAILURE,
+            TrainingStatus.PENDING,
+        )
+    return int(result.rsplit(" ", 1)[-1])
+
+
 async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus) -> list[TournamentTaskTraining]:
     """
     Fetch tournament tasks with specific training status ordered by priority and creation time.
@@ -1434,11 +1504,17 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
     Returns:
         List of TournamentTaskTraining objects ordered by priority (1 first) then creation time (newest first)
     """
+    # A pending row of a boss round that ended early is never started.
+    undecided_only = (
+        f"AND NOT {_task_of_decided_final_round(cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE)}"
+        if status == TrainingStatus.PENDING
+        else ""
+    )
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {_training_row_columns()}
             FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
-            WHERE {cst.TRAINING_STATUS} = $1
+            WHERE {cst.TRAINING_STATUS} = $1 {undecided_only}
             ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC, {cst.TASK_ID}
         """
         results = await connection.fetch(query, status)

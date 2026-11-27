@@ -47,7 +47,7 @@ The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>
 - The input models have the sizes in the [text guide](miner_text.md#rounds), 1-8B in all. A compression tournament takes all its tasks from one text tournament: an active one, else one completed in the last 7 days. Until one is available it waits.
 - Advancement uses average rank over every round played so far, ranked among the surviving miners.
 - With fewer miners than slots, all advance.
-- Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. Round 3 can therefore have fewer miners than advanced from round 2.
+- Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. The check repeats among the remaining miners, with ranks retaken within them, until it no longer drops anyone. Round 3 can therefore have fewer miners than advanced from round 2.
 - The miner that advances from round 3 is the challenger.
 
 <details>
@@ -74,6 +74,7 @@ The challenger and the boss meet on four tasks. Both compress the same input mod
 Source: [`FINAL_ROUND_QUANT_TASK_DISTRIBUTION`, `QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py), [`seed_tasks.py`](../validator/tournament/seed_tasks.py).
 
 - The boss trains its four entries in the boss round, alongside the challenger.
+- The round ends as soon as the crown is out of reach: after each task finishes, the [crown rule](miner.md#the-boss-and-the-crown) is applied to rounds 1-3 and the finished boss-round tasks, with the tasks still to come counted as wins. If the challenger can no longer be crowned, the boss keeps the crown and no further training is started. A task counts only when both the boss and the challenger have a valid score on it.
 - Each fixed task draws one of the two formats. Both players get the same format on a task. The two fixed tasks may differ.
 
 ## What your code receives

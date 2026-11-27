@@ -50,6 +50,7 @@ class RoundOrderWorld(QuantWorld):
 
         monkeypatch.setattr(orchestrator.tournament_sql, "add_tournament_task_hotkey_pairs_for_training", add_rows)
         monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_id_by_task_id", AsyncMock(return_value=QUANT_TID))
+        monkeypatch.setattr(orchestrator.tournament_sql, "is_task_of_decided_final_round", AsyncMock(return_value=False))
 
     async def _existing_in_round(self, round_id, config, group_id=None, pair_id=None):
         registered = [task_id for task_id, _, registered_in, _ in self.registrations if registered_in == round_id]

@@ -52,11 +52,11 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | --- | --- |
 | `test_compression_rounds.py` | Compression rounds 1-3 on the text boss's models: tasks, release, cuts, the boss's rank, third place. |
 | `test_quant_round_shape.py` | Group sizes through rounds 1-3 and into the boss round. |
-| `test_round3_viability.py` | The viability cut after round 2, and third place when one miner survives. |
-| `test_text_cumulative_advancement.py` | Advancement by mean rank over the rounds played, within the surviving miners. |
+| `test_round3_viability.py` | The viability cut after round 2 of compression, and third place when one miner survives. |
+| `test_text_cumulative_advancement.py` | Text advancement by mean rank over the rounds played, within the surviving miners, the viability cut after round 2, and third place when one miner survives. |
 | `test_group_standings_tiebreak.py` | Standings tie-breaks: average rank, summed gap, seeded shuffle. |
 | `test_image_round_plan.py` | The image round plan, the boss-round mix, `round_plan`, and telling a planned image tournament from one with a three-task round 1. |
-| `test_image_rounds.py` | Image rounds 1-3: the boss assigned to each round's task, standings without the boss, advancement 8 / 4 / 1 on average rank, the boss's rank, third place and the empty-score check. |
+| `test_image_rounds.py` | Image rounds 1-3: the boss assigned to each round's task, standings without the boss, advancement 8 / 4 / 1 on average rank with the viability cut after round 2, the boss's rank, third place and the empty-score check. |
 | `test_image_task_creation.py` | Image task creation: one task per planned round drawn from its slots, the four boss-round tasks drawn around round 3's slot, the three-task round 1 structure, replacements keeping slot and pair cap. |
 | `test_text_r1_single_group.py` | Round 1 is one group for text and image, and how many tasks it holds. |
 | `test_empty_score_group_guard.py` | A group with no valid challenger score halts advancement. |
@@ -72,7 +72,9 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | --- | --- |
 | `test_crown.py` | The crown rule and each task kind's win and non-win bands, as pure functions. |
 | `test_text_boss_round_crown.py` | The text boss round: its tasks, the crown, the early stop and the flow around them. |
-| `test_image_boss_round_crown.py` | The planned image boss round: the crown, the early stop after round 3, the evaluation-fault hold and third place. |
+| `test_image_boss_round_crown.py` | The planned image boss round: the crown, the early stop after round 3 and inside the boss round, the evaluation-fault hold and third place. |
+| `test_boss_round_early_stop.py` | Stopping an image or compression boss round once the crown is out of reach: no further training is started, the seed row, the scheduler. |
+| `test_boss_round_performance_early_stop.py` | Boss-round analytics skip the tasks an early-stopped round never ran. |
 | `test_quant_boss_crown_rule.py` | The compression crown over seven head-to-heads. |
 | `test_quant_early_stop.py` | The compression early stop, and retirement of unattached seeds. |
 | `test_paired_boss_round.py` | The paired per-example test. |

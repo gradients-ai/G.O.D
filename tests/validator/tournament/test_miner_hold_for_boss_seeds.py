@@ -87,6 +87,7 @@ class Seeds:
         monkeypatch.setattr(orchestrator.task_sql, "get_task", get_task)
         monkeypatch.setattr(orchestrator.tournament_sql, "get_training_status_for_task_and_hotkeys", boss_rows)
         monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament", get_tournament)
+        monkeypatch.setattr(orchestrator.tournament_sql, "fail_pending_rows_of_decided_final_rounds", AsyncMock(return_value=0))
         monkeypatch.setattr(orchestrator, "alert_seed_issue", self.alert)
 
     def add(

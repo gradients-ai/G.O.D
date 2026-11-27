@@ -16,6 +16,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 from core.models.task_models import TaskType
 from core.models.task_models import higher_is_better
@@ -98,6 +99,23 @@ class CrownVerdict(BaseModel):
     @property
     def crowned(self) -> bool:
         return self.crowned_if_complete and self.complete
+
+
+class BossRoundProgress(BaseModel):
+    """Where a planned image or compression boss round stands on the crown rule while some of its tasks are still to finish.
+
+    ``verdict`` counts every task not yet decided as a win. ``decided`` holds the finished tasks on which both sides have a
+    valid score, each with its head-to-head. ``settled`` holds those and the finished tasks the challenger won by default (the
+    boss has no valid entry), whose winners are stored. ``unfinished_task_ids`` are the round's tasks that have not finished.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenger: str
+    verdict: CrownVerdict
+    decided: list[tuple[str, HeadToHead]] = Field(default_factory=list)
+    settled: list[tuple[str, HeadToHead]] = Field(default_factory=list)
+    unfinished_task_ids: list[str] = Field(default_factory=list)
 
 
 def is_valid_score(score: float | None) -> bool:

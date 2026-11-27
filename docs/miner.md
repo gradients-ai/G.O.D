@@ -60,7 +60,7 @@ Each tournament is entered on its endpoint and charges one fee per entry. Enteri
 
 ### Advancing
 
-Each tournament plays three rounds of one task each. Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, among the miners still in.
+Each tournament plays three rounds of one task each. Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, among the miners still in. In every tournament, the miners that advance from round 2 are then checked against every possible round-3 ranking, and a miner that no ranking could place first or joint first on average rank is dropped. The check repeats among the remaining miners, with ranks retaken within them, until it no longer drops anyone.
 
 A tie on average rank goes to the smaller summed gap. On each task, a miner's gap is how far its value is behind the task's best entry, relative to that best; the gaps are added over the rounds played. A tie left after that is settled by a seeded draw.
 
@@ -314,7 +314,7 @@ The challenger takes the crown with one of these results over the seven:
 
 Any other result leaves the crown with the boss: three or more head-to-heads not won, one beyond both allowances, or two that are both level with the boss or worse.
 
-Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown.
+Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown. In an image or compression boss round the rule is also applied as each task finishes, with the tasks still to come counted as wins: once the crown is out of reach, the boss keeps it and no further training is started. A task counts only when both the boss and the challenger have a valid score on it.
 
 Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: crown_verdict`](../validator/tournament/crown.py).
 

@@ -551,6 +551,23 @@ async def is_hotkey_assigned_to_task(task_id: str, hotkey: str, psql_db: PSQLDB)
         )
 
 
+async def fail_task_if_status(task_id: str, statuses: list[TaskStatus], psql_db: PSQLDB) -> bool:
+    """Set a task FAILURE only while its status is one of ``statuses``, so a task another loop has just moved on is left
+    alone. Returns whether the task was changed."""
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TASKS_TABLE}
+            SET {cst.STATUS} = $2
+            WHERE {cst.TASK_ID} = $1 AND {cst.STATUS} = ANY($3)
+            """,
+            task_id,
+            TaskStatus.FAILURE.value,
+            [status.value for status in statuses],
+        )
+    return result.endswith(" 1")
+
+
 async def get_tasks_with_status(
     status: TaskStatus,
     psql_db: PSQLDB,
