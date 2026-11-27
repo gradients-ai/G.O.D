@@ -106,7 +106,7 @@ class Scheduling:
         monkeypatch.setattr(orchestrator, "_create_training_request", create_request)
         monkeypatch.setattr(orchestrator, "start_training_task", AsyncMock(return_value=True))
         monkeypatch.setattr(orchestrator.tournament_sql, "update_tournament_task_training_status", AsyncMock())
-        monkeypatch.setattr(orchestrator.tournament_sql, "update_gpu_availability", AsyncMock())
+        monkeypatch.setattr(orchestrator.tournament_sql, "reserve_gpus", AsyncMock())
         monkeypatch.setattr(orchestrator.gpu_cost_sql, "start_cost_run", AsyncMock())
         monkeypatch.setattr(orchestrator.asyncio, "sleep", sleep)
 
@@ -171,7 +171,7 @@ class TestAQuantRowWithoutItsInputs:
         orchestrator.start_training_task.assert_awaited_once()
         orchestrator.tournament_sql.update_tournament_task_training_status.assert_awaited_once()  # the text row: TRAINING
         assert orchestrator.tournament_sql.update_tournament_task_training_status.await_args.args[0] == text.task.task_id
-        orchestrator.tournament_sql.update_gpu_availability.assert_awaited_once()
+        orchestrator.tournament_sql.reserve_gpus.assert_awaited_once()
         self.alert.assert_awaited_once()
 
     async def test_the_loop_logs_the_held_pairs_at_error_level(self, scheduling, caplog):
@@ -254,7 +254,7 @@ class TestAQuantRowWithoutItsInputs:
         assert self.alert.await_args.kwargs["hotkeys"] == [hotkey]
         orchestrator.start_training_task.assert_not_awaited()
         orchestrator.tournament_sql.update_tournament_task_training_status.assert_not_awaited()
-        orchestrator.tournament_sql.update_gpu_availability.assert_not_awaited()
+        orchestrator.tournament_sql.reserve_gpus.assert_not_awaited()
         assert orchestrator.cst.TRAINING_START_RETRY_INTERVAL not in scheduling.sleeps
 
     async def test_a_row_with_every_input_is_dispatched(self, scheduling, real_request_build, monkeypatch):
@@ -300,3 +300,20 @@ class TestATextRowThatRaises:
 
         with pytest.raises(RuntimeError, match="reference lookup blew up"):
             await orchestrator.schedule_tasks_for_training([text], CONFIG)
+
+
+class TestTheDispatchReservation:
+    async def test_the_run_is_reserved_under_its_key_before_it_reads_as_training(self, scheduling):
+        text = _row(TaskType.INSTRUCTTEXTTASK)
+        calls = []
+        orchestrator.tournament_sql.reserve_gpus.side_effect = lambda *args: calls.append(("reserve", args))
+        orchestrator.tournament_sql.update_tournament_task_training_status.side_effect = lambda *args, **kwargs: calls.append(
+            ("status", args)
+        )
+
+        await orchestrator.schedule_tasks_for_training([text], CONFIG)
+
+        assert [name for name, _ in calls] == ["reserve", "status"]
+        trainer_ip, gpu_ids, hours, key, _db = calls[0][1]
+        assert (trainer_ip, gpu_ids, hours) == ("1.2.3.4", [0], text.task.hours_to_complete)
+        assert key == f"training:{text.task.task_id}:{text.hotkey}"

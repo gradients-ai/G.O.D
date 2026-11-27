@@ -98,6 +98,8 @@ TRAINER_HTTP_TIMEOUT = 30.0  # seconds
 # Grace period after GPU reservation before trusting trainer "available" reports.
 # Covers the gap between dispatch and container startup (clone, docker build, etc).
 GPU_RESERVATION_GRACE_PERIOD_SECONDS = 10 * 60  # 10 minutes
+# How long a GPU is held when the trainer reports it busy without a live reservation, or cannot be asked.
+UNTRACKED_GPU_HOLD_HOURS = 2.0
 EXPECTED_TRAINING_START_MESSAGE = "Started Training!"
 NO_RETRY_RESULT = "No Retry"
 

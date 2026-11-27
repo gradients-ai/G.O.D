@@ -22,6 +22,7 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 | `freeform_release.py` | Public release of the champion's decoder and the boss-round decoded models. |
 | `github_validation.py` | Repository, licence, commit and obfuscation checks at enrolment. |
 | `gpu_requirements.py` | GPU requirement calculation for tournament tasks. |
+| `gpu_reservations.py` | Job keys for trainer GPU reservations. |
 | `models.py` | Tournament schemas: rounds, seeds, source links, rank comparisons, responses. |
 | `notifications.py` | Discord notifications. |
 | `obfuscation_detection/` | Bundled detector binary used by repository validation. |
@@ -304,6 +305,7 @@ The 20th prep-stage rejection marks the role `failed`.
 | Round hold | A prepped compression seed waits in `LOOKING_FOR_NODES` until its round attaches it. The boss's training row is then created with the miners'. |
 | Seed hold | A seed is not finalised until its round has attached it and every assigned miner has finished. |
 | Adapter merge | A boss output that is a LoRA adapter is merged into a full model by a trainer model-prep job, and the merged repo becomes the seed's output. |
+| GPU reservations | A dispatched job (training run, model prep, adapter merge) reserves its GPUs in `trainers_gpus` under its job key (`gpu_reservations.py`). The job's end releases what it still holds: a training run when its row leaves `training` (same transaction), a prep or merge when it returns or is found ended on a trainer after a restart. A GPU another job has reserved since is never released. |
 
 <details>
 <summary>Details and failure handling</summary>
@@ -319,6 +321,7 @@ The 20th prep-stage rejection marks the role `failed`.
 - **Merge failures.** The seed waits and is never redrawn or charged. Retries back off from 10 to 60 minutes. Three consecutive failures raise an alert. After six the merge is parked until the orchestrator restarts.
 - **Decode results.** A freeform training's decode result is stored on `task_nodes`. Only a miner fault is scored: no decoder snapshot, or the trainer's `quant_failure`. An infra error, a missing result or a snapshot mismatch holds the task and alerts once.
 - **Isolation.** A compression row that raises during scheduling is dropped for that cycle, so it does not hold text and image rows.
+- **Reservation reconciliation.** Every cycle compares the reservations with each trainer's GPU report. A GPU the trainer reports idle is freed: at once when the hold came from the trainer's report, after `GPU_RESERVATION_GRACE_PERIOD_SECONDS` from the reservation when a job holds it (a prep is reserved before the trainer has it). A GPU reported busy that no live reservation covers is held for `UNTRACKED_GPU_HOLD_HOURS` without a job key, and a live reservation is never overwritten. A trainer that cannot be asked keeps every GPU reserved for at least `UNTRACKED_GPU_HOLD_HOURS`, with the job keys kept.
 - **Logging.** Trainer requests are logged with the GitHub token and the presigned decoder URL masked, and URL queries stripped.
 
 </details>

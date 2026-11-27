@@ -433,7 +433,7 @@ class TestScheduling:
 
         orchestrator.start_training_task.assert_not_awaited()
         orchestrator.tournament_sql.update_tournament_task_training_status.assert_not_awaited()
-        orchestrator.tournament_sql.update_gpu_availability.assert_not_awaited()
+        orchestrator.tournament_sql.reserve_gpus.assert_not_awaited()
 
 
 class TestTheFetchCycle:

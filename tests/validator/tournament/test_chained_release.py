@@ -439,7 +439,8 @@ def model_prep(monkeypatch):
     monkeypatch.setattr(orchestrator, "_check_suitable_gpus", AsyncMock(return_value=("10.0.0.1", [0], "nvlink")))
     monkeypatch.setattr(orchestrator, "_start_prep_cost_run", AsyncMock())
     monkeypatch.setattr(orchestrator, "_finish_prep_cost_run", AsyncMock())
-    monkeypatch.setattr(orchestrator.tournament_sql, "update_gpu_availability", AsyncMock())
+    monkeypatch.setattr(orchestrator.tournament_sql, "reserve_gpus", AsyncMock())
+    monkeypatch.setattr(orchestrator.tournament_sql, "release_gpus", AsyncMock())
     monkeypatch.setattr(orchestrator, "dispatch_augmentation_and_stats", mocks.dispatch)
     return mocks
 

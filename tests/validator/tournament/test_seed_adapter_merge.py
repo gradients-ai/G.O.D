@@ -78,7 +78,8 @@ class World:
         self.dispatch = AsyncMock(return_value=ModelPrepResponse(augmented_model_id=MERGED))
         self.found_job = AsyncMock(return_value=SeedMergeLookup())
         self.gpus = AsyncMock(return_value=("10.0.0.1", [0, 1], "nvlink"))
-        self.availability = AsyncMock()
+        self.reserve = AsyncMock()
+        self.release = AsyncMock()
         self.replace = AsyncMock()
         self.discord = AsyncMock()
         mp = monkeypatch
@@ -140,7 +141,8 @@ class World:
         mp.setattr(orchestrator, "dispatch_augmentation_and_stats", self.dispatch)
         mp.setattr(orchestrator, "_start_prep_cost_run", AsyncMock())
         mp.setattr(orchestrator, "_finish_prep_cost_run", AsyncMock())
-        mp.setattr(orchestrator.tournament_sql, "update_gpu_availability", self.availability)
+        mp.setattr(orchestrator.tournament_sql, "reserve_gpus", self.reserve)
+        mp.setattr(orchestrator.tournament_sql, "release_gpus", self.release)
 
     def _list_repo_files(self, repo, token=None):
         if repo not in self.hub:
@@ -262,7 +264,10 @@ class TestTheMergeJob:
     async def test_the_gpus_are_reserved_and_released(self, world):
         await world.merge_cycle()
 
-        assert [call.args[2] for call in world.availability.await_args_list] == [t_cst.MODEL_PREP_GPU_RESERVE_HOURS, 0]
+        key = f"prep:{world.seed.task_id}-merge:task"
+        world.reserve.assert_awaited_once()
+        assert world.reserve.await_args.args[:4] == ("10.0.0.1", [0, 1], t_cst.MODEL_PREP_GPU_RESERVE_HOURS, key)
+        assert [call.args[0] for call in world.release.await_args_list] == [key]
         assert orchestrator._seed_merge_in_progress == set()
 
     async def test_the_gpus_are_released_when_the_dispatch_errors(self, world):
@@ -270,7 +275,7 @@ class TestTheMergeJob:
 
         await world.merge_cycle()
 
-        assert world.availability.await_args_list[-1].args[2] == 0
+        assert world.release.await_args_list[-1].args[0] == f"prep:{world.seed.task_id}-merge:task"
         assert orchestrator._seed_merge_in_progress == set()
         assert world.seed.merged_output_repo is None
 
