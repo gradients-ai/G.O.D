@@ -375,15 +375,15 @@ Participation counts contenders, not sign-ups. A contender is a miner that ranke
 
 ### Split over the paid places
 
-1st place's share depends on how long the champion has held the crown. It is 85% in the tournament where a new boss takes the crown and in its first defence. From the second defence it falls by 2.1875 points per defence and reaches 50% at the 17th defence, where it stays until the boss is dethroned. The rest goes to 2nd and 3rd at three quarters and one quarter.
+1st place's share depends on how long the champion has held the crown. It is 85% in the tournament where a new boss takes the crown and in its first defence. From the second defence it falls by 1.5625 points per defence and reaches 60% at the 17th defence, where it stays until the boss is dethroned. The rest goes to 2nd and 3rd at three quarters and one quarter, so 2nd rises to 30% and 3rd to 10%.
 
 | Champion's defences | 1st | 2nd | 3rd |
 | --- | --- | --- | --- |
 | 0 (crown) or 1 | 85% | 11.25% | 3.75% |
-| 5 | 76.25% | 17.81% | 5.94% |
-| 9 | 67.5% | 24.38% | 8.13% |
-| 13 | 58.75% | 30.94% | 10.31% |
-| 17 or more | 50% | 37.5% | 12.5% |
+| 5 | 78.75% | 15.94% | 5.31% |
+| 9 | 72.5% | 20.63% | 6.88% |
+| 13 | 66.25% | 25.31% | 8.44% |
+| 17 or more | 60% | 30% | 10% |
 
 Two places are paid when the tournament has no third-place miner: 2nd then gets the whole rest. A tournament with one paid place pays it the whole share.
 

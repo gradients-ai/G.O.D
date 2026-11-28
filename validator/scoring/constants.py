@@ -45,7 +45,7 @@ TOURNAMENT_PAID_RANKS = 3
 # stays until the boss is dethroned. The rest of the pool goes to 2nd and 3rd at TOURNAMENT_SECOND_PLACE_REST_FRACTION
 # and 1 - TOURNAMENT_SECOND_PLACE_REST_FRACTION of it. See validator.scoring.tournaments.first_place_share.
 TOURNAMENT_FIRST_PLACE_SHARE_START = 0.85
-TOURNAMENT_FIRST_PLACE_SHARE_FLOOR = 0.50
+TOURNAMENT_FIRST_PLACE_SHARE_FLOOR = 0.60
 TOURNAMENT_FIRST_PLACE_DECLINE_DEFENCES = 16
 TOURNAMENT_SECOND_PLACE_REST_FRACTION = 0.75
 # Guaranteed minimum share per tournament type (text / quant / image). Each type always receives at

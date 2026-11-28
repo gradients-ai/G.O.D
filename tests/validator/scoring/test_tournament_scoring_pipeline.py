@@ -317,13 +317,13 @@ class TestFirstPlaceShare:
         assert first_place_share(1) == pytest.approx(0.85)
 
     def test_declines_linearly_from_the_second_defence(self):
-        assert first_place_share(2) == pytest.approx(0.85 - 0.35 / 16)
-        assert first_place_share(9) == pytest.approx(0.675)
+        assert first_place_share(2) == pytest.approx(0.85 - 0.25 / 16)
+        assert first_place_share(9) == pytest.approx(0.725)
 
     def test_reaches_the_floor_at_the_seventeenth_defence_and_stays(self):
-        assert first_place_share(16) > 0.50
-        assert first_place_share(17) == pytest.approx(0.50)
-        assert first_place_share(40) == pytest.approx(0.50)
+        assert first_place_share(16) > 0.60
+        assert first_place_share(17) == pytest.approx(0.60)
+        assert first_place_share(40) == pytest.approx(0.60)
 
 
 class TestPlaceShare:
@@ -341,7 +341,7 @@ class TestPlaceShare:
 
     def test_floor_split(self):
         first = first_place_share(17)
-        assert [place_share(3, position, first) for position in (1, 2, 3)] == pytest.approx([0.50, 0.375, 0.125])
+        assert [place_share(3, position, first) for position in (1, 2, 3)] == pytest.approx([0.60, 0.30, 0.10])
 
     def test_two_paid_places_pay_the_whole_pool(self):
         first = first_place_share(5)
