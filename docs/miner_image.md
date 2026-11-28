@@ -158,8 +158,8 @@ Your LoRA is applied to the task's base model and scored on the held-out images.
 
 | Families | Per held-out image |
 | --- | --- |
-| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its classifier-free-guided prediction at the model's inference CFG) over the official schedule's steps with sigma 0.9-1.0 ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
-| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss at high noise (sigma 0.9-1.0; HiDream-O1 text-to-image 0.54-0.84 and edit 0.33-1.0, for its pixel-space noise), on the guided prediction at the model's inference CFG for text-to-image and unguided for edits, averaged over repeated noise draws (about 40 cases per pass) on up to 8 held-out images ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
+| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its unguided prediction) at 8 even noise levels in sigma 0.70-0.95 ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
+| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss on the unguided prediction at sigma 0.70-0.95 (HiDream-O1 text-to-image 0.54-0.84 and edit 0.33-1.0, for its pixel-space noise), with the noise levels spread evenly across the band in sign-flipped noise pairs (about 240 cases per pass, 120 for MOSS) on up to 8 held-out images; edits weight the edited region and the rest of the image equally ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
 
 | Step | Rule |
 | --- | --- |
@@ -183,8 +183,8 @@ The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). 
 
 | Outcome | Task score |
 | --- | --- |
-| Win | at least 1% lower than the boss's, or a valid result where the boss has none |
-| Within the smaller allowance | lower than the boss's, by less than 1% |
+| Win | at least 0.15% lower than the boss's, or a valid result where the boss has none |
+| Within the smaller allowance | lower than the boss's, by less than 0.15% |
 | Within the larger allowance | equal to the boss's, or at most 1% higher |
 | Beyond both | more than 1% higher than the boss's, or no valid result from the challenger |
 

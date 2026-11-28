@@ -93,37 +93,45 @@ AI Toolkit and Musubi share one evaluator image but use isolated Python
 environments. This keeps their incompatible pinned Transformers and Diffusers
 versions from replacing each other while avoiding a Dockerfile per backend.
 
-Every image family is scored in the noisiest informative part of the noise range.
-There the LoRA's learned concept (layout, identity, style) decides the prediction.
-Lower noise mostly measures damage to the base model's detail prior, so an average
-over the full range ranks barely-trained LoRAs first and leaves strong models
-within hundredths of a percent of each other.
+Every image family is scored on plain L2 in the band sigma 0.70-0.95. Above 0.95 the
+prediction is close to the shared noise floor and rankings flip between evaluation
+seeds; below 0.70 most of the image is visible and an untrained base model catches up
+with trained LoRAs. Inside the band the trained LoRAs are ordered the same way on every
+seed and the base model is clearly worst.
 
-Text-to-image candidates are scored on the classifier-free-guided prediction at
-the model's inference CFG: `uncond + cfg * (cond - uncond)` from the captioned and
-empty-prompt predictions of the same noisy input. That is the prediction that makes
-the images users see, and it amplifies exactly what the LoRA learned about the
-prompt. For these tasks `text_guided_losses` holds the guided loss and is the whole
-score (weight 1.0, `DIFFUSION_GUIDED_SCORE_MODEL_TYPES`); `no_text_losses` holds the
-empty-prompt loss for reference. Edit tasks keep the unguided score:
-`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT` x captioned + the rest x empty-prompt, mask-weighted.
+Every task is scored unguided: 0.5 x the captioned loss + 0.5 x the empty-prompt loss
+(`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT`). A classifier-free-guided prediction is not used:
+at this noise its error grows with how strongly the LoRA commits to what it learned, so
+on held-out compositions it ranks an untrained base model above LoRAs that learned the
+task. The empty-prompt loss measures how much of the task the LoRA learned; the
+captioned loss measures how well it follows each prompt. Edit tasks weight the edited
+region and the rest of the image equally (`MASK_TARGET_CHANGED_MASS = 0.5`), so a
+candidate must make the edit and must not damage what it should leave alone.
 
-| Family | Noise levels | Score | Cases |
-| --- | --- | --- | --- |
-| Z-Image, Qwen-Image, Krea2 (ComfyUI) | the steps of the official schedule with sigma in [0.9, 1) (Z-Image 9 steps, Qwen-Image 50, Krea2 52) | CFG 2.0 (Z-Image-Turbo has none; lightest that separates), 4.0, 3.5 | about 512 guided cases per candidate whatever the test size |
-| FLUX.2, MOSS (AI Toolkit), text-to-image | sigma 0.9-1.0 (`max_denoising_steps=100`) | CFG 4.0, 3.0 | up to 8 held-out examples; 5-20 repeats each, about 40 cases per pass |
-| HiDream O1 (AI Toolkit), text-to-image | sigma 0.54-0.84 (`min/max_denoising_steps=160/460`) | CFG 5.0 | as above |
-| FLUX.2, Qwen-Image-Edit, MOSS (AI Toolkit), edit | sigma 0.9-1.0 | unguided, mask-weighted | as above |
-| HiDream O1 (Musubi), edit | sigma 0.33-1.0 (`--min_timestep 330`) | unguided, mask-weighted | as above |
+| Family | Noise levels | Cases |
+| --- | --- | --- |
+| Z-Image, Qwen-Image, Krea2 (ComfyUI) | 8 even strata in sigma 0.70-0.95 | about 512 per pass whatever the test size |
+| FLUX.2 (AI Toolkit), text-to-image and edit | sigma 0.70-0.95 (`min/max_denoising_steps=50/300`) | about 240 per pass: up to 8 held-out examples x 10-40 repeats |
+| MOSS, Qwen-Image-Edit (AI Toolkit), text-to-image and edit | as above | about 120 per pass (MOSS is about four times slower per case) |
+| HiDream O1 (AI Toolkit), text-to-image | sigma 0.54-0.84 (`min/max_denoising_steps=160/460`) | as FLUX.2 |
+| HiDream O1 (Musubi), edit | sigma 0.33-1.0 (`--min_timestep 330`) | as FLUX.2 |
 
 HiDream O1 noises pixel-space x0 with `noise_scale=8`, so its SNR at sigma is
 (1 - sigma) / (8 sigma) and the difficulty of latent sigma 0.9 sits near sigma 0.53.
 Above sigma 0.84 its input is close to pure noise with nothing left to denoise.
 
-On the ComfyUI path one guided pass yields both losses (a post-CFG hook keeps the
-empty-prompt prediction), at the cost of the two unguided passes it replaces. On the AI Toolkit path the empty-prompt pass runs first and stores its
-prediction per case; the captioned pass combines it with its own prediction. Both
-passes see identical seeded noise and timesteps for each case.
+On the AI Toolkit path the cases of each held-out image are spread evenly across the
+band and come in antithetic pairs: repeats 2k and 2k+1 share one noise draw with its
+sign flipped, and pair k takes the k-th equal slice of the band
+([`stratified_case`](../validator/evaluation/objective_seeding.py)). This removes most
+of the variance that comes from which noise levels and noise samples a seed happens to
+draw. The captioned and empty-prompt passes see identical noise and timesteps for each
+case. On the ComfyUI path the strata are fixed levels, each with several noise draws.
+
+Image L2 differences between trained LoRAs are tenths of a percent, consistently
+across seeds. The crown margin is set just above the gap between two trainings of the
+same repository: a challenger must beat the boss's loss by `IMAGE_CROWN_WIN_MARGIN`
+(0.15%) on a task to win it.
 
 Per-candidate compute is held fixed so a bigger test split does not add time.
 `IMAGE_OBJECTIVE_EVAL_SAMPLES`, `IMAGE_OBJECTIVE_EVAL_REPEATS`, `IMAGE_EVAL_STRATA`

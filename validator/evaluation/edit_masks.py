@@ -1,13 +1,12 @@
 """Changed-region masks for image-edit objective evaluation.
 
 The source image is part of an edit model's input, so unchanged pixels are
-almost free to predict and dominate an unweighted loss. A mask built from the
-held-out source/target difference weights the edited area more, while a floor
-weight keeps penalising candidates that damage the rest of the image.
-
-For small edits the unchanged floor drops so the changed region still carries
-about MASK_TARGET_CHANGED_MASS of the total weight mass (changed weight stays
-1.0). Large edits keep up to MASK_UNCHANGED_WEIGHT on the background.
+almost free to predict and, unweighted, the small edited area is lost in them.
+A mask built from the held-out source/target difference splits the loss so the
+edited area and the rest of the image carry equal weight mass
+(MASK_TARGET_CHANGED_MASS): a candidate must make the edit and must not damage
+what it should leave alone. The changed weight stays 1.0; the unchanged weight
+is solved per image from the mask's coverage.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import numpy as np
 from PIL import Image
 from PIL import ImageFilter
 
+
 if TYPE_CHECKING:
     import torch
 
@@ -29,11 +29,11 @@ MASK_CHANGE_THRESHOLD = 0.05
 MASK_DILATE_SIZE = 9
 MASK_MIN_COVERAGE = 0.005
 MASK_MAX_COVERAGE = 0.85
-# Cap on the unchanged-pixel floor (legacy fixed weight for large / balanced edits).
-MASK_UNCHANGED_WEIGHT = 0.2
+# Cap on the unchanged-pixel weight: never above the changed weight.
+MASK_UNCHANGED_WEIGHT = 1.0
 MASK_UNCHANGED_WEIGHT_MIN = 0.005
-# Target share of total weight mass on the changed region when coverage is small.
-MASK_TARGET_CHANGED_MASS = 0.92
+# Share of total weight mass on the changed region: half, so edit quality and preserving the rest count equally.
+MASK_TARGET_CHANGED_MASS = 0.5
 # Soft mask above this counts as "changed" for region-split metrics.
 MASK_REGION_THRESHOLD = 0.5
 
@@ -100,10 +100,10 @@ def unchanged_weight_for_coverage(coverage: float) -> float:
 
 
 def mask_weights(mask: Image.Image) -> np.ndarray:
-    """Map a 0-255 mask to loss weights in [adaptive_floor, 1].
+    """Map a 0-255 mask to loss weights in [unchanged_weight, 1].
 
-    Small changed regions get a lower unchanged floor so edit pixels dominate
-    the mean loss; large regions keep up to MASK_UNCHANGED_WEIGHT on the rest.
+    The unchanged weight is set from the mask's coverage so the changed and
+    unchanged regions each carry about half of the weight mass.
     """
     values = mask_as_float(mask)
     floor = unchanged_weight_for_coverage(float(values.mean()))

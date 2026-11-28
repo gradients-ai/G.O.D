@@ -11,18 +11,20 @@ from safetensors.torch import save_file
 from validator.evaluation import edit_masks
 from validator.evaluation.evaluators import diffusion_objective
 from validator.evaluation.evaluators.diffusion_objective import EVAL_HIDREAM_MAX_DENOISING_STEPS
+from validator.evaluation.evaluators.diffusion_objective import EVAL_HIDREAM_MIN_DENOISING_STEPS
 from validator.evaluation.evaluators.diffusion_objective import EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP
 from validator.evaluation.evaluators.diffusion_objective import EVAL_MAX_DENOISING_STEPS
 from validator.evaluation.evaluators.diffusion_objective import EVAL_MIN_DENOISING_STEPS
 from validator.evaluation.evaluators.diffusion_objective import EVAL_MUSUBI_MAX_TIMESTEP
-from validator.evaluation.evaluators.diffusion_objective import EVAL_MUSUBI_MIN_TIMESTEP
 from validator.evaluation.evaluators.diffusion_objective import _evaluation_config
 from validator.evaluation.evaluators.diffusion_objective import _mean_losses_by_sample
 from validator.evaluation.evaluators.diffusion_objective import _write_dataset
 from validator.evaluation.evaluators.diffusion_objective import lora_modules_from_file
 from validator.evaluation.evaluators.diffusion_objective import lora_network_spec
+from validator.evaluation.evaluators.diffusion_objective import repeats_per_sample
 from validator.evaluation.objective_seeding import CaseSeeder
 from validator.evaluation.objective_seeding import case_seed
+from validator.evaluation.objective_seeding import stratified_case
 
 
 def _png(image: Image.Image) -> bytes:
@@ -54,11 +56,12 @@ def test_edit_dataset_preserves_target_source_and_blank_conditioning(tmp_path: P
     rows = [("sample", target, "replace the sky", source)]
 
     targets = _write_dataset(rows, tmp_path / "edit", "edit", blank=True)
+    stem = diffusion_objective.sample_stem(target, source)
 
-    assert (targets / "000000.png").read_bytes() == target
-    assert (targets / "000000.txt").read_text() == ""
-    assert (tmp_path / "edit" / "controls" / "0" / "000000.png").read_bytes() == source
-    mask = Image.open(tmp_path / "edit" / "masks" / "000000.png")
+    assert (targets / f"{stem}.png").read_bytes() == target
+    assert (targets / f"{stem}.txt").read_text() == ""
+    assert (tmp_path / "edit" / "controls" / "0" / f"{stem}.png").read_bytes() == source
+    mask = Image.open(tmp_path / "edit" / "masks" / f"{stem}.png")
     assert mask.size == (512, 384)
 
 
@@ -78,8 +81,8 @@ def test_edit_mask_skips_unchanged_and_global_edits():
     assert edit_masks.build_edit_mask(_png(source), _png(Image.new("RGB", (256, 256), (250, 10, 10)))) is None
 
 
-def test_edit_mask_weights_keep_a_floor_on_unchanged_pixels():
-    # ~80% coverage → floor clamps to the legacy max (0.2).
+def test_edit_mask_weights_never_weigh_unchanged_pixels_above_changed_ones():
+    # ~80% coverage: an equal mass split would need an unchanged weight above 1, so it caps at the changed weight.
     values = np.zeros((5, 5), dtype=np.uint8)
     values.flat[:20] = 255  # 20/25 = 0.8
     mask = Image.fromarray(values, mode="L")
@@ -90,8 +93,8 @@ def test_edit_mask_weights_keep_a_floor_on_unchanged_pixels():
     assert float(weights[values == 255][0]) == pytest.approx(1.0)
 
 
-def test_edit_mask_weights_boost_small_changed_regions():
-    # ~5% coverage should drop the unchanged floor so edit mass stays dominant.
+def test_edit_mask_weights_split_mass_evenly_for_small_changed_regions():
+    # ~5% coverage: the unchanged weight drops so the edited area and the rest each carry half of the mass.
     values = np.zeros((20, 20), dtype=np.uint8)
     values[:2, :10] = 255  # 20 / 400 = 0.05
     mask = Image.fromarray(values, mode="L")
@@ -101,7 +104,8 @@ def test_edit_mask_weights_boost_small_changed_regions():
     changed_mass = float(weights[values == 255].sum())
     total_mass = float(weights.sum())
 
-    assert floor == pytest.approx(edit_masks.MASK_UNCHANGED_WEIGHT_MIN)
+    assert floor == pytest.approx(0.05 / 0.95)
+    assert edit_masks.MASK_TARGET_CHANGED_MASS == 0.5
     assert floor < edit_masks.MASK_UNCHANGED_WEIGHT
     assert weights[values == 0][0] == pytest.approx(floor)
     assert weights[values == 255][0] == pytest.approx(1.0)
@@ -225,10 +229,12 @@ def test_ai_toolkit_config_uses_frozen_training_loss_without_updates(tmp_path: P
         tmp_path / "records.json",
         steps=8,
         seed=123,
+        repeats=4,
     )
 
     process = config["config"]["process"][0]
     assert process["type"] == "god_objective_evaluator"
+    assert process["evaluation_repeats"] == 4
     assert process["network"]["pretrained_lora_path"] == str(lora)
     assert process["network"]["linear"] == 64
     assert process["network"]["linear_alpha"] == 32.0
@@ -241,15 +247,13 @@ def test_ai_toolkit_config_uses_frozen_training_loss_without_updates(tmp_path: P
     assert process["train"]["gradient_checkpointing"] is True
     assert process["datasets"][0]["resolution"] == 1024
     assert process["train"]["cache_text_embeddings"] is False
-    assert process["train"]["min_denoising_steps"] == 0
-    assert process["train"]["max_denoising_steps"] == 250
+    assert process["train"]["min_denoising_steps"] == 50
+    assert process["train"]["max_denoising_steps"] == 300
     assert process["train"]["timestep_type"] == "linear"
-    assert EVAL_MIN_DENOISING_STEPS == 0
-    assert EVAL_MAX_DENOISING_STEPS == 250
-    assert EVAL_MUSUBI_MIN_TIMESTEP == 750
+    assert (EVAL_MIN_DENOISING_STEPS, EVAL_MAX_DENOISING_STEPS) == (50, 300)  # sigma 0.95 .. 0.70
     assert EVAL_MUSUBI_MAX_TIMESTEP == 1000
-    assert EVAL_HIDREAM_MAX_DENOISING_STEPS == 50
-    assert EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP == 950
+    assert (EVAL_HIDREAM_MIN_DENOISING_STEPS, EVAL_HIDREAM_MAX_DENOISING_STEPS) == (160, 460)
+    assert EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP == 330
     assert process["model"]["model_kwargs"]["edit"] is True
 
 
@@ -266,8 +270,8 @@ def test_hidream_eval_uses_harder_timestep_band(tmp_path: Path):
 
     process = config["config"]["process"][0]
     assert "evaluation_mask_dir" not in process
-    assert process["train"]["min_denoising_steps"] == 0
-    assert process["train"]["max_denoising_steps"] == 50
+    assert process["train"]["min_denoising_steps"] == 160
+    assert process["train"]["max_denoising_steps"] == 460
 
 
 def test_hidream_edit_scores_each_model_in_its_own_directory(tmp_path: Path, monkeypatch):
@@ -307,3 +311,42 @@ def test_hidream_edit_scores_each_model_in_its_own_directory(tmp_path: Path, mon
     assert prepared == ["conditional", "no_text"]
     assert [entry[1] for entry in scored] == ["model-000", "model-000", "model-001", "model-001"]
     assert all(isinstance(result[str(path)], dict) for path in loras)
+
+
+def test_stratified_cases_pair_up_with_opposite_noise_and_cover_the_band():
+    repeats, low, high = 20, 50, 300
+    cases = [stratified_case(1234, "sample", repeat, repeats, low, high) for repeat in range(repeats)]
+
+    for pair in range(repeats // 2):
+        (seed_a, sign_a, index_a), (seed_b, sign_b, index_b) = cases[2 * pair], cases[2 * pair + 1]
+        assert seed_a == seed_b and index_a == index_b
+        assert (sign_a, sign_b) == (1.0, -1.0)
+        width = (high - low) / (repeats // 2)
+        assert low + pair * width <= index_a < low + (pair + 1) * width
+    assert len({seed for seed, _, _ in cases}) == repeats // 2
+
+
+def test_stratified_cases_follow_the_sample_and_task_seed():
+    assert stratified_case(1, "a", 0, 4, 50, 300) == stratified_case(1, "a", 0, 4, 50, 300)
+    assert stratified_case(1, "a", 0, 4, 50, 300) != stratified_case(2, "a", 0, 4, 50, 300)
+    assert stratified_case(1, "a", 0, 4, 50, 300) != stratified_case(1, "b", 0, 4, 50, 300)
+
+
+@pytest.mark.parametrize("repeats", [0, 1, 3])
+def test_stratified_cases_need_an_even_repeat_count(repeats):
+    with pytest.raises(ValueError):
+        stratified_case(1, "a", 0, repeats, 50, 300)
+
+
+@pytest.mark.parametrize("samples", [1, 3, 5, 8, 12, 50])
+@pytest.mark.parametrize("model_type", ["flux2-klein-4b", "moss-image-base", None])
+def test_repeats_per_sample_are_even_and_bounded(samples, model_type):
+    repeats = repeats_per_sample(samples, model_type)
+
+    assert repeats % 2 == 0
+    assert diffusion_objective.MIN_REPEATS <= repeats <= diffusion_objective.MAX_REPEATS
+
+
+def test_moss_gets_fewer_cases_per_pass_than_flux():
+    assert repeats_per_sample(8, "flux2-klein-4b") == 30
+    assert repeats_per_sample(8, "moss-image-base") == 14

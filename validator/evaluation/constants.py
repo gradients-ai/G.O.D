@@ -5,9 +5,6 @@ from core.models.quant_models import QuantFormat
 
 
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.5
-DIFFUSION_GUIDED_SCORE_MODEL_TYPES = frozenset(
-    {"z-image", "qwen-image", "krea2", "flux2-klein-4b", "moss-image-base", "hidream-o1"}
-)
 
 
 DOCKER_EVAL_HF_CACHE_DIR = "/root/.cache/huggingface"

@@ -18,7 +18,6 @@ from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.image_artifacts import atomic_json
 from validator.evaluation.image_artifacts import materialize_model
 from validator.evaluation.image_artifacts import prepare_base
-from validator.evaluation.image_denoising import CFGRecorder
 from validator.evaluation.image_denoising import FlowPredictionSampler
 from validator.evaluation.image_encoder import DeterministicVAE
 from validator.evaluation.image_flow_adapter import FAMILIES
@@ -40,29 +39,14 @@ def _enable_download_progress() -> None:
         logger.info("huggingface progress bars unavailable; using stage logs only")
 
 
-DEFAULT_SIGMA_MIN = 0.9
-DEFAULT_SIGMA_MAX = 1.0
+# Score sigma 0.70-0.95 in even strata, unguided: above 0.95 rankings flip between seeds, below 0.70 an untrained base
+# model catches up with trained LoRAs, and a guided prediction rewards a vague base model over a LoRA that learned the task.
+DEFAULT_SIGMA_MIN = 0.70
+DEFAULT_SIGMA_MAX = 0.95
 DEFAULT_STRATA = 8
-INFERENCE_RECIPES = {
-    "z-image": (9, 2.0),
-    "qwen-image": (50, 4.0),
-    "krea2": (52, 3.5),
-}
 CASES_PER_MODE = 512
 MIN_NOISES = 8
 MAX_NOISES = 64
-
-
-def schedule_levels(model, steps: int, sigma_min: float = DEFAULT_SIGMA_MIN) -> list[float]:
-    """The noise levels the model's official schedule (Comfy "simple", the model's own shift) visits in
-    [sigma_min, 1). Pure noise (sigma 1) is excluded: the velocity target is undefined there."""
-    import comfy.samplers
-
-    sigmas = comfy.samplers.calculate_sigmas(model.get_model_object("model_sampling"), "simple", steps).tolist()
-    levels = sorted({round(float(sigma), 6) for sigma in sigmas if sigma_min <= sigma < 1.0}, reverse=True)
-    if not levels:
-        raise ValueError(f"Inference schedule has no steps in [{sigma_min}, 1)")
-    return levels
 
 
 def noises_per_level(strata: int, images: int) -> int:
@@ -122,12 +106,9 @@ def evaluate(config, output):
         validation = decoded_images(read_dataset(config["dataset"], scratch / "test.zip"))
         api = HfApi()
         adapter, base, clip, encoder = load_base(api, config["repo"], family, config["comfy_root"])
-        recipe = INFERENCE_RECIPES.get(family)
-        levels = schedule_levels(base, recipe[0]) if recipe else None
-        guidance = recipe[1] if recipe else None
-        if levels:
-            config["strata"] = len(levels)
-            logger.info("scoring %s schedule levels %s at CFG %s", family, levels, guidance)
+        logger.info(
+            "scoring %s at %s strata in sigma [%s, %s], unguided", family, config["strata"], DEFAULT_SIGMA_MIN, DEFAULT_SIGMA_MAX
+        )
         if config["noises"] is None:
             config["noises"] = noises_per_level(config["strata"], len(validation))
         logger.info("noise draws per level=%s for %s test images", config["noises"], len(validation))
@@ -161,10 +142,6 @@ def evaluate(config, output):
                 model, candidate_clip = adapter.apply_lora(base, clip, name)
                 candidate_conditioning = {} if candidate_clip.patcher.patches else conditioning_cache
                 vectors = {"text": [], "no_text": []}
-                recorder = CFGRecorder() if guidance else None
-                if recorder is not None:
-                    model = model.clone()
-                    model.set_model_sampler_post_cfg_function(recorder)
                 first_check = None
                 logger.info("eval_stage=score_images repo=%s images=%s", repo, len(cases))
 
@@ -174,8 +151,7 @@ def evaluate(config, output):
                     return candidate_conditioning[prompt]
 
                 def run_pass(data, questions, positive, negative, cfg):
-                    sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse,
-                                                    recorder if cfg is not None else None)
+                    sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse, None)
                     guider = comfy.samplers.CFGGuider(model)
                     guider.set_conds(positive, negative if cfg is not None else [])
                     guider.set_cfg(cfg if cfg is not None else 1.0)
@@ -197,21 +173,12 @@ def evaluate(config, output):
                         config["noises"],
                         DEFAULT_SIGMA_MIN,
                         DEFAULT_SIGMA_MAX,
-                        sigmas=levels,
                     )
-                    if guidance:
-                        positive, negative = conditioning(item["caption"]), conditioning("")
-                        rows = run_pass(data, questions, positive, negative, guidance)
-                        vectors["text"].append(float(np.mean([row["mse"] for row in rows])))
-                        vectors["no_text"].append(float(np.mean([row["mse_empty"] for row in rows])))
+                    for mode, prompt in (("text", item["caption"]), ("no_text", "")):
+                        rows = run_pass(data, questions, conditioning(prompt), None, None)
+                        vectors[mode].append(float(np.mean([row["mse"] for row in rows])))
                         if first_check is None:
-                            first_check = (data, questions, positive, negative, guidance, [row["mse"] for row in rows])
-                    else:
-                        for mode, prompt in (("text", item["caption"]), ("no_text", "")):
-                            rows = run_pass(data, questions, conditioning(prompt), None, None)
-                            vectors[mode].append(float(np.mean([row["mse"] for row in rows])))
-                            if first_check is None:
-                                first_check = (data, questions, conditioning(prompt), None, None, [row["mse"] for row in rows])
+                            first_check = (data, questions, conditioning(prompt), None, None, [row["mse"] for row in rows])
                     logger.info(
                         "scored image %s/%s repo=%s name=%s elapsed=%.1fs",
                         image_index,

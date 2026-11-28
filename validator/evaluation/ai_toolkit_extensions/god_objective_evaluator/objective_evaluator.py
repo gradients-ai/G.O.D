@@ -15,6 +15,7 @@ from validator.evaluation.objective_seeding import CaseSeeder
 from validator.evaluation.objective_seeding import case_seed
 from validator.evaluation.objective_seeding import enable_deterministic_kernels
 from validator.evaluation.objective_seeding import seed_everything
+from validator.evaluation.objective_seeding import stratified_case
 
 
 class GODObjectiveEvaluator(SDTrainer):
@@ -25,6 +26,9 @@ class GODObjectiveEvaluator(SDTrainer):
         super().__init__(process_id, job, config, **kwargs)
         self.evaluation_output = Path(config["evaluation_output"])
         self.evaluation_seeder = CaseSeeder(int(config["evaluation_seed"]))
+        # Repeats per sample; when set, cases are stratified across the noise band in antithetic pairs.
+        self.evaluation_repeats = int(config.get("evaluation_repeats") or 0)
+        self._noise_sign = 1.0
         mask_dir = config.get("evaluation_mask_dir")
         self.evaluation_mask_dir = Path(mask_dir) if mask_dir else None
         self.evaluation_records = []
@@ -73,6 +77,10 @@ class GODObjectiveEvaluator(SDTrainer):
             raise ValueError("LoRA loaded no non-zero up weights; refusing to score the base model")
         self.candidate_lora_loaded = True
         return extra_weights
+
+    def get_noise(self, latents, batch_size, dtype=torch.float32, batch=None, timestep=None):
+        noise = super().get_noise(latents, batch_size, dtype=dtype, batch=batch, timestep=timestep)
+        return noise * self._noise_sign
 
     def _loss_target(self, noise_pred, noise, noisy_latents, timesteps, batch, prior_pred=None):
         """Mirror SDTrainer's primary target selection for region metrics."""
@@ -168,10 +176,28 @@ class GODObjectiveEvaluator(SDTrainer):
         self._case_key = f"{sample_key}-{repeat}"
         original_backward = self.accelerator.backward
         self.accelerator.backward = lambda *_args, **_kwargs: None
+        original_randint = torch.randint
+        self._noise_sign = 1.0
+        if self.evaluation_repeats:
+            low = int(self.train_config.min_denoising_steps)
+            high = int(self.train_config.max_denoising_steps)
+            seed, self._noise_sign, index = stratified_case(
+                self.evaluation_seeder.base_seed, sample_key, repeat, self.evaluation_repeats, low, high
+            )
+            seed_everything(seed)
+
+            def stratified_randint(*args, **kwargs):
+                # The trainer draws the case's timestep index with randint(low, high, (batch,)); pin it to the stratum.
+                if len(args) >= 3 and args[0] == low and args[1] == high:
+                    return torch.full(args[2], index, dtype=torch.long, device=kwargs.get("device"))
+                return original_randint(*args, **kwargs)
+
+            torch.randint = stratified_randint
         try:
             loss = self.train_single_accumulation(batches[0])
         finally:
             self.accelerator.backward = original_backward
+            torch.randint = original_randint
         if masked and not self.mask_shape_checked:
             raise ValueError("Edit mask was attached but never reached the loss")
 

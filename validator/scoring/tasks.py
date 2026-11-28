@@ -516,16 +516,6 @@ def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskT
         )
 
 
-def image_text_guided_weight(task) -> float:
-    """Weight of text_guided_losses in an image task's score. Text-to-image tasks on models scored with
-    classifier-free guidance report the guided loss there, and it alone is the score."""
-    model_type = getattr(task.model_type, "value", task.model_type)
-    training_mode = getattr(task.training_mode, "value", task.training_mode)
-    if training_mode == "text-to-image" and model_type in eval_cst.DIFFUSION_GUIDED_SCORE_MODEL_TYPES:
-        return 1.0
-    return eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
-
-
 def _calculate_weighted_loss_for_image_eval(
     eval_result: EvaluationResultImage, weight: float = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
 ) -> float:
@@ -1340,9 +1330,7 @@ async def process_miners_pool(
                         )
                     )
                 elif task.task_type == TaskType.IMAGETASK:
-                    results.append(
-                        _image_miner_result(miner.hotkey, test_result, submission, image_text_guided_weight(task))
-                    )
+                    results.append(_image_miner_result(miner.hotkey, test_result, submission))
                 else:
                     raise ValueError(f"Unknown task type: {task.task_type}")
 

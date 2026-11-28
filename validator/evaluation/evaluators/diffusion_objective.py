@@ -50,24 +50,23 @@ MODEL_REPOS = {
     "moss-image-base": "OpenMOSS-Team/MOSS-Image-Base",
 }
 TEMPLATE_ROOT = REPO_ROOT / "core" / "training_templates"
-CASES_PER_MODE = 40
-MIN_REPEATS = 5
-MAX_REPEATS = 20
+# Cases per pass, spread evenly over the noise band in antithetic pairs: three evaluation seeds' worth of cases on
+# FLUX.2 (3 x 80); MOSS is about four times slower per case, so it gets three seeds of 40.
+CASES_PER_MODE = 240
+CASES_PER_MODE_BY_MODEL = {"moss-image-base": 120}
+MIN_REPEATS = 10
+MAX_REPEATS = 40
 SAMPLE_STEM_HEX_CHARS = 16
 LORA_DOWN_SUFFIXES = (".lora_down.weight", ".lora_A.weight")
 
-# AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise.
-EVAL_MIN_DENOISING_STEPS = 0
-EVAL_MAX_DENOISING_STEPS = 100
+# AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise. Score sigma 0.70-0.95: above 0.95
+# rankings flip between seeds, below 0.70 an untrained base model catches up with trained LoRAs.
+EVAL_MIN_DENOISING_STEPS = 50
+EVAL_MAX_DENOISING_STEPS = 300
 EVAL_MUSUBI_MAX_TIMESTEP = 1000
 EVAL_HIDREAM_MIN_DENOISING_STEPS = 160
 EVAL_HIDREAM_MAX_DENOISING_STEPS = 460
 EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 330
-INFERENCE_CFG = {"flux2-klein-4b": 4.0, "moss-image-base": 3.0, "hidream-o1": 5.0}
-
-
-def inference_cfg(model_type: str, training_mode: str) -> float | None:
-    return INFERENCE_CFG.get(model_type) if training_mode == "text-to-image" else None
 
 
 def lora_modules_from_file(path: Path) -> tuple[dict[str, int], dict[str, float], set[str]]:
@@ -197,9 +196,9 @@ def _evaluation_config(
     output: Path,
     steps: int,
     seed: int,
-    cfg: dict | None = None,
+    repeats: int | None = None,
 ) -> dict:
-    """cfg: {"role": "store" | "combine", "scale": float, "store": path} for the guided text-to-image passes."""
+    """repeats: cases per held-out sample; when given, the evaluator stratifies them across the band in antithetic pairs."""
     template = TEMPLATE_ROOT / TEMPLATES[(model_type, training_mode)]
     config = yaml.safe_load(template.read_text(encoding="utf-8"))
     process = config["config"]["process"][0]
@@ -207,10 +206,8 @@ def _evaluation_config(
     process["training_folder"] = str(output.parent / "unused-checkpoints")
     process["evaluation_output"] = str(output)
     process["evaluation_seed"] = seed
-    if cfg:
-        process["evaluation_cfg_role"] = cfg["role"]
-        process["evaluation_cfg_scale"] = cfg["scale"]
-        process["evaluation_cfg_store"] = str(cfg["store"])
+    if repeats:
+        process["evaluation_repeats"] = repeats
     mask_dir = _mask_dir(dataset, training_mode)
     if mask_dir is not None:
         process["evaluation_mask_dir"] = str(mask_dir)
@@ -272,7 +269,6 @@ def _run_objective(
     sample_count: int,
     repeats: int,
     seed: int,
-    cfg: dict | None = None,
 ) -> dict:
     output = model_dir / f"{label}_records.json"
     config_path = model_dir / f"{label}.yaml"
@@ -284,21 +280,22 @@ def _run_objective(
         output,
         sample_count * repeats,
         seed,
-        cfg,
+        repeats,
     )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     subprocess.run(
         ["python", "run.py", str(config_path)], cwd=AI_TOOLKIT_ROOT, env=_subprocess_env(), check=True
     )
     records = json.loads(output.read_text(encoding="utf-8"))
-    if cfg and cfg["role"] == "combine" and not all(record.get("cfg_guided") for record in records):
-        raise ValueError("Guided evaluation returned unguided losses; is the evaluator extension current?")
     return _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
 
 
-def repeats_per_sample(samples: int) -> int:
-    """Repeats per held-out sample that keep samples x repeats near CASES_PER_MODE."""
-    return max(MIN_REPEATS, min(MAX_REPEATS, CASES_PER_MODE // max(1, samples)))
+def repeats_per_sample(samples: int, model_type: str | None = None) -> int:
+    """Repeats per held-out sample that keep samples x repeats near the model's cases per pass. Always even: repeats
+    are scored in antithetic pairs."""
+    cases = CASES_PER_MODE_BY_MODEL.get(model_type, CASES_PER_MODE)
+    repeats = max(MIN_REPEATS, min(MAX_REPEATS, cases // max(1, samples)))
+    return repeats - repeats % 2
 
 
 def musubi_global_seed(seed: int) -> int:
@@ -474,7 +471,9 @@ def evaluate(config: dict, output_path: Path) -> dict:
         rows = read_generation_dataset(config["dataset"], work_dir / "test.zip", config["training_mode"])
         rows = rows[: config["sample_limit"]]
         if config.get("repeats") is None:
-            config["repeats"] = repeats_per_sample(len(rows))
+            config["repeats"] = repeats_per_sample(len(rows), config["model_type"])
+        if config["repeats"] % 2 and not hidream_edit:
+            raise ValueError("Image objective evaluation needs an even repeat count (antithetic pairs)")
         if not rows:
             raise ValueError("Image objective evaluation dataset is empty")
         conditional = _write_dataset(rows, work_dir / "conditional", config["training_mode"], blank=False)
@@ -510,11 +509,8 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             config["seed"],
                         )
                 else:
-                    scale = inference_cfg(*combination)
-                    store = model_dir / "cfg-store"
 
                     def run(dataset, label):
-                        role = None if scale is None else ("store" if label == "no_text" else "combine")
                         return _run_objective(
                             *combination,
                             dataset,
@@ -524,23 +520,22 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             len(rows),
                             config["repeats"],
                             config["seed"],
-                            {"role": role, "scale": scale, "store": store} if role else None,
                         )
+                captioned = run(conditional, "conditional")
                 blank = run(no_text, "no_text")
-                guided = run(conditional, "conditional")
                 eval_loss = {
-                    "text_guided_losses": guided["losses"],
+                    "text_guided_losses": captioned["losses"],
                     "no_text_losses": blank["losses"],
                 }
-                if "changed_losses" in guided:
-                    eval_loss["text_guided_changed_losses"] = guided["changed_losses"]
-                if "unchanged_losses" in guided:
-                    eval_loss["text_guided_unchanged_losses"] = guided["unchanged_losses"]
+                if "changed_losses" in captioned:
+                    eval_loss["text_guided_changed_losses"] = captioned["changed_losses"]
+                if "unchanged_losses" in captioned:
+                    eval_loss["text_guided_unchanged_losses"] = captioned["unchanged_losses"]
                 if "changed_losses" in blank:
                     eval_loss["no_text_changed_losses"] = blank["changed_losses"]
                 if "unchanged_losses" in blank:
                     eval_loss["no_text_unchanged_losses"] = blank["unchanged_losses"]
-                coverage = guided.get("mean_mask_coverage", blank.get("mean_mask_coverage"))
+                coverage = captioned.get("mean_mask_coverage", blank.get("mean_mask_coverage"))
                 if coverage is not None:
                     eval_loss["mean_mask_coverage"] = coverage
                 result[repo] = {"eval_loss": eval_loss, "is_finetune": True}
