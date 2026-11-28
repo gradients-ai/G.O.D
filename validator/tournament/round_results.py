@@ -2336,3 +2336,27 @@ async def round_ranks_with_boss(tournament_id: str, psql_db: PSQLDB) -> Tourname
     return TournamentRoundRanks(
         tournament_id=tournament_id, rounds=[await _round_ranks_with_boss(round_data, psql_db) for round_data in rounds]
     )
+
+
+async def count_round_one_above_boss(tournament_id: str, psql_db: PSQLDB) -> int | None:
+    """How many challengers ranked strictly above the boss in round 1, ranked together as in round_ranks_with_boss.
+
+    The emission balancer counts these as a tournament's contenders. Where the boss has no round-1 result
+    (tournaments from before the boss played round 1) it ranks behind every valid entry, so every challenger with a valid
+    round-1 result counts. None when the tournament has no round 1.
+    """
+    round_one = next(
+        (
+            round_data
+            for round_data in await get_tournament_rounds(tournament_id, psql_db)
+            if round_data.round_number == 1 and not round_data.is_final_round
+        ),
+        None,
+    )
+    if round_one is None:
+        return None
+    ranks = (await _round_ranks_with_boss(round_one, psql_db)).ranks
+    boss_rank = ranks.get(EMISSION_BURN_HOTKEY)
+    if boss_rank is None:
+        return None
+    return sum(1 for hotkey, rank in ranks.items() if hotkey != EMISSION_BURN_HOTKEY and rank < boss_rank)

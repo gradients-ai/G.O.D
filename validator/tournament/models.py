@@ -451,6 +451,9 @@ class TournamentResultsWithWinners(BaseModel):
     final_positions: dict[str, int] = Field(default_factory=dict)
     # Stored when the tournament completed with the boss kept (a tournament that plays the round plan); empty otherwise.
     boss_rank_comparisons: list[BossRankComparison] = Field(default_factory=list)
+    # Successful defences of this tournament's champion by the end of it: 0 when the crown was taken here. Sets the
+    # 1st-place share (validator.scoring.tournaments.first_place_share).
+    champion_defences: int = Field(default=0, ge=0)
 
 
 class PairedLossComparison(BaseModel):

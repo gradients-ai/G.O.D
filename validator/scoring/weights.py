@@ -6,6 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from validator.db.sql.auditing import store_latest_scores_url
+from validator.db.sql.tournaments import count_champion_defences
 from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_boss_rank_comparisons
 from validator.db.sql.tournaments import get_latest_completed_tournament
@@ -333,7 +334,7 @@ async def stored_boss_rank_comparisons(tournament_id: str, psql_db) -> list[Boss
 async def get_latest_paying_tournament(psql_db, tournament_type: TournamentType) -> TournamentData | None:
     """The latest completed tournament of a type; for quant with none completed, the latest completed text one.
 
-    That fallback pays quant's pool as it stands, flex phase-in included, to the text placements."""
+    That fallback pays quant's pool as it stands to the text placements."""
     tournament = await get_latest_completed_tournament(psql_db, tournament_type)
     if tournament is None and tournament_type == TournamentType.QUANT:
         tournament = await get_latest_completed_tournament(psql_db, TournamentType.TEXT)
@@ -369,6 +370,7 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
             winner_hotkey=text_tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
             boss_rank_comparisons=await stored_boss_rank_comparisons(text_tournament.tournament_id, psql_db),
+            champion_defences=await count_champion_defences(psql_db, text_tournament.tournament_id),
         )
 
     # Fetch quant tournament data
@@ -383,6 +385,7 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
             winner_hotkey=quant_tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
             boss_rank_comparisons=await stored_boss_rank_comparisons(quant_tournament.tournament_id, psql_db),
+            champion_defences=await count_champion_defences(psql_db, quant_tournament.tournament_id),
         )
 
     # Fetch image tournament data
@@ -396,6 +399,7 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
             base_winner_hotkey=image_tournament.base_winner_hotkey,
             winner_hotkey=image_tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
+            champion_defences=await count_champion_defences(psql_db, image_tournament.tournament_id),
         )
 
     # Fetch participants

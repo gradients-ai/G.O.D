@@ -179,7 +179,7 @@ One compression tournament, `tourn_552dac324b78e7bf_20261123`, does not pay its 
 
 When the compression viability cut left the challenger alone in round 3, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
 
-How the paid places split a tournament's emission is in [Payouts](../../docs/miner.md#payouts).
+How the paid places split a tournament's emission is in [Payouts](../../docs/miner.md#payouts). 1st place's share starts at 85% for a new boss and falls with each defence to 60% (`first_place_share` in `validator/scoring/tournaments.py`).
 
 ### Per-contender rule
 

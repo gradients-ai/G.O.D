@@ -1,8 +1,6 @@
 """Every tournament type pays its places from one pool: its dynamic base share. A tournament won by the burn hotkey adds
 nothing, and the pools and what they pay always add up."""
 
-from datetime import datetime
-from datetime import timezone
 from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -23,14 +21,13 @@ from validator.tournament.models import TournamentStatus
 
 
 TEXT, QUANT, IMAGE = TournamentType.TEXT, TournamentType.QUANT, TournamentType.IMAGE
-NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
 BOSS = cts.EMISSION_BURN_HOTKEY
 CHAMPION = "5Champion"
 SECOND = "5Second"
 THIRD = "5Third"
 BASE = {TEXT: 0.3, QUANT: 0.4, IMAGE: 0.3}
 # Rank-weight ladder over three paid places.
-FIRST_SHARE, SECOND_SHARE, THIRD_SHARE = 16 / 21, 4 / 21, 1 / 21
+FIRST_SHARE, SECOND_SHARE, THIRD_SHARE = 0.85, 0.1125, 0.0375  # a new champion's crown split
 
 
 def _completed(tournament_type: TournamentType, winner: str, base_winner: str | None) -> TournamentData:
@@ -58,6 +55,7 @@ async def _audit(winner: str, base_winner: str | None, base: dict[TournamentType
         patch("validator.scoring.weights.get_active_tournament_participants", AsyncMock(return_value=[])),
         patch("validator.scoring.weights.get_weekly_task_participation_data", AsyncMock(return_value=[])),
         patch("validator.scoring.weights.get_boss_rank_comparisons", AsyncMock(return_value=[])),
+        patch("validator.scoring.weights.count_champion_defences", AsyncMock(return_value=0)),
         patch("validator.scoring.weights.get_dynamic_base_weights", AsyncMock(return_value=dict(base))),
     ):
         return await build_tournament_audit_data(MagicMock())
@@ -110,10 +108,9 @@ async def test_a_tournament_won_by_the_burn_hotkey_with_no_known_champion_gets_n
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
-@pytest.mark.usefixtures("quant_ramp_complete")
 @pytest.mark.parametrize("text,quant,image", list(product([None, 3, 40, 1000], repeat=3)))
 def test_pools_sum_to_one_and_distributed_plus_undistributed_equal_the_total(text, quant, image):
-    pools = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image}, NOW)
+    pools = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image})
     assert sum(pools.values()) == pytest.approx(1.0, abs=1e-12)
 
     hotkey_to_node_id = {"a": 0, "b": 1, "c": 2}

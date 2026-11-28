@@ -6,6 +6,7 @@ from datetime import timezone
 from pydantic import ValidationError
 
 import validator.db.constants as cst
+import validator.scoring.constants as scoring_cst
 from core.constants.network import NETUID
 from core.logging import get_logger
 from core.models.pvp_models import PvPEnvironmentResult
@@ -97,6 +98,13 @@ def is_champion_winner(winner_hotkey: str | None, base_winner_hotkey: str | None
         return False
 
     return winner_hotkey == champion_hotkey or (winner_hotkey == EMISSION_BURN_HOTKEY and base_winner_hotkey == champion_hotkey)
+
+
+def resolve_champion_hotkey(winner_hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
+    """The real champion of a tournament: the winner, or the defending boss when the winner is the burn placeholder."""
+    if winner_hotkey == scoring_cst.EMISSION_BURN_HOTKEY:
+        return base_winner_hotkey
+    return winner_hotkey
 
 
 async def create_tournament(tournament: TournamentData, psql_db: PSQLDB) -> str:
@@ -1154,30 +1162,39 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
         ]
 
 
-async def get_recent_completed_entrant_counts(
-    psql_db: PSQLDB,
-    tournament_type: TournamentType,
-    limit: int = 4,
-    min_entrants: int = 3,
-) -> list[int]:
-    """Entrant counts of the last ``limit`` completed tournaments of this type, newest first (emission auto-balancer).
+async def get_recent_completed_tournament_ids(psql_db: PSQLDB, tournament_type: TournamentType, limit: int) -> list[str]:
+    """Ids of the last ``limit`` completed tournaments of this type, newest first (emission auto-balancer).
 
-    Only completed tournaments count; pending, active and cancelled ones are left out by status. Tournaments below
-    ``min_entrants`` are skipped so a reseeded or single-entry tournament can't distort the split.
-    """
+    Pending, active and cancelled tournaments are left out by status."""
     async with await psql_db.connection() as connection:
         query = f"""
-            SELECT COUNT(p.{cst.HOTKEY}) AS n
-            FROM {cst.TOURNAMENTS_TABLE} t
-            LEFT JOIN {cst.TOURNAMENT_PARTICIPANTS_TABLE} p USING ({cst.TOURNAMENT_ID})
-            WHERE t.{cst.TOURNAMENT_TYPE} = $1 AND t.{cst.TOURNAMENT_STATUS} = 'completed'
-            GROUP BY t.{cst.TOURNAMENT_ID}, t.{cst.CREATED_AT}
-            HAVING COUNT(p.{cst.HOTKEY}) >= $2
-            ORDER BY t.{cst.CREATED_AT} DESC
-            LIMIT $3
+            SELECT {cst.TOURNAMENT_ID}
+            FROM {cst.TOURNAMENTS_TABLE}
+            WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} = 'completed'
+            ORDER BY {cst.CREATED_AT} DESC
+            LIMIT $2
         """
-        results = await connection.fetch(query, tournament_type.value, min_entrants, limit)
-        return [row["n"] for row in results]
+        results = await connection.fetch(query, tournament_type.value, limit)
+        return [row[cst.TOURNAMENT_ID] for row in results]
+
+
+async def count_round_one_completers(psql_db: PSQLDB, tournament_id: str) -> int:
+    """Hotkeys that completed at least one round-1 task of the tournament: training succeeded and the evaluation stored a
+    finite test loss. The emission balancer's fallback when the round-1 ranking against the boss cannot be computed."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT COUNT(DISTINCT n.{cst.HOTKEY})
+            FROM {cst.TOURNAMENT_ROUNDS_TABLE} r
+            JOIN {cst.TOURNAMENT_TASKS_TABLE} tt ON tt.{cst.ROUND_ID} = r.{cst.ROUND_ID}
+            JOIN {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} h
+              ON h.{cst.TASK_ID} = tt.{cst.TASK_ID} AND h.{cst.TRAINING_STATUS} = '{TrainingStatus.SUCCESS.value}'
+            JOIN {cst.TASK_NODES_TABLE} n
+              ON n.{cst.TASK_ID} = h.{cst.TASK_ID} AND n.{cst.HOTKEY} = h.{cst.HOTKEY}
+            WHERE r.{cst.TOURNAMENT_ID} = $1 AND r.{cst.ROUND_NUMBER} = 1
+              AND n.{cst.TEST_LOSS} IS NOT NULL
+              AND n.{cst.TEST_LOSS} NOT IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8)
+        """
+        return await connection.fetchval(query, tournament_id)
 
 
 async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: PSQLDB):
@@ -1841,35 +1858,46 @@ async def get_latest_tournament_with_created_at(
         return None, None
 
 
-async def count_champion_consecutive_wins(psql_db: PSQLDB, tournament_type: TournamentType, champion_hotkey: str) -> int:
-    """Count consecutive tournament wins for the current champion (their current winning streak)."""
+async def count_champion_defences(psql_db: PSQLDB, tournament_id: str) -> int:
+    """How many times this tournament's champion had defended the crown by the end of it.
+
+    0 when the tournament is the one the champion took the crown in (or the champion is unknown); n when it is the
+    champion's n-th successful defence. Counts back through the completed tournaments of the same type up to and
+    including this one, stopping at the first won by someone else.
+    """
     async with await psql_db.connection() as connection:
-        # Get all completed tournaments ordered by date descending
-        # Include base_winner_hotkey to handle EMISSION_BURN_HOTKEY wins correctly
-        query = f"""
-            SELECT {cst.WINNER_HOTKEY}, {cst.BASE_WINNER_HOTKEY}, {cst.CREATED_AT}
+        anchor = await connection.fetchrow(
+            f"""
+            SELECT {cst.TOURNAMENT_TYPE}, {cst.WINNER_HOTKEY}, {cst.BASE_WINNER_HOTKEY}, {cst.CREATED_AT}
+            FROM {cst.TOURNAMENTS_TABLE}
+            WHERE {cst.TOURNAMENT_ID} = $1
+            """,
+            tournament_id,
+        )
+        if anchor is None:
+            return 0
+        champion = resolve_champion_hotkey(anchor[cst.WINNER_HOTKEY], anchor[cst.BASE_WINNER_HOTKEY])
+        if champion is None:
+            return 0
+
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.WINNER_HOTKEY}, {cst.BASE_WINNER_HOTKEY}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1
               AND {cst.TOURNAMENT_STATUS} = 'completed'
+              AND {cst.CREATED_AT} <= $2
             ORDER BY {cst.CREATED_AT} DESC
-        """
-        results = await connection.fetch(query, tournament_type.value)
-
-        if not results:
-            return 0
-
-        consecutive_wins = 0
-        for row in results:
-            winner = row[cst.WINNER_HOTKEY]
-            base_winner = row[cst.BASE_WINNER_HOTKEY]
-
-            if is_champion_winner(winner, base_winner, champion_hotkey):
-                consecutive_wins += 1
-            else:
-                # Stop counting when we hit a tournament won by someone else
+            """,
+            anchor[cst.TOURNAMENT_TYPE],
+            anchor[cst.CREATED_AT],
+        )
+        wins = 0
+        for row in rows:
+            if not is_champion_winner(row[cst.WINNER_HOTKEY], row[cst.BASE_WINNER_HOTKEY], champion):
                 break
-
-        return consecutive_wins
+            wins += 1
+        return max(wins - 1, 0)
 
 
 async def get_tournament_id_by_task_id(task_id: str, psql_db: PSQLDB) -> str | None:

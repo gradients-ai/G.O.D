@@ -1,6 +1,3 @@
-from datetime import datetime
-
-
 EMISSION_BURN_HOTKEY = "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"
 
 # General miner pool sizes
@@ -42,35 +39,37 @@ PVP_PERF_DIFF_AT_THRESHOLD = 0.10
 # Tournament score and weight distribution
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001
 TOURNAMENT_PAID_RANKS = 3
-TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
+# Share of a type's pool paid to 1st place. It starts at TOURNAMENT_FIRST_PLACE_SHARE_START when a new boss takes the
+# crown and stays there for the boss's first defence. From the second defence it falls linearly by
+# (START - FLOOR) / TOURNAMENT_FIRST_PLACE_DECLINE_DEFENCES per defence and reaches FLOOR at the 17th defence, where it
+# stays until the boss is dethroned. The rest of the pool goes to 2nd and 3rd at TOURNAMENT_SECOND_PLACE_REST_FRACTION
+# and 1 - TOURNAMENT_SECOND_PLACE_REST_FRACTION of it. See validator.scoring.tournaments.first_place_share.
+TOURNAMENT_FIRST_PLACE_SHARE_START = 0.85
+TOURNAMENT_FIRST_PLACE_SHARE_FLOOR = 0.60
+TOURNAMENT_FIRST_PLACE_DECLINE_DEFENCES = 16
+TOURNAMENT_SECOND_PLACE_REST_FRACTION = 0.75
 # Guaranteed minimum share per tournament type (text / quant / image). Each type always receives at
 # least this much of the emission pie; the remainder (EMISSION_FLEX_POOL) is split between the
 # types by participation. Also the fallback split's floor when a type has no completed history.
-TOURNAMENT_TEXT_WEIGHT = 0.15
-TOURNAMENT_QUANT_WEIGHT = 0.35
-TOURNAMENT_IMAGE_WEIGHT = 0.25
-EMISSION_FLEX_POOL = 1.0 - (TOURNAMENT_TEXT_WEIGHT + TOURNAMENT_QUANT_WEIGHT + TOURNAMENT_IMAGE_WEIGHT)  # 0.25
+TOURNAMENT_TEXT_WEIGHT = 0.25
+TOURNAMENT_QUANT_WEIGHT = 0.15
+TOURNAMENT_IMAGE_WEIGHT = 0.15
+EMISSION_FLEX_POOL = 1.0 - (TOURNAMENT_TEXT_WEIGHT + TOURNAMENT_QUANT_WEIGHT + TOURNAMENT_IMAGE_WEIGHT)  # 0.45
 
 # Upper bound of any single tournament type's pool: its minimum plus the whole flex pool, i.e. the
 # most participation alone can ever hand it. The dynamic base always lies within [minimum, this].
-MAX_TEXT_TOURNAMENT_WEIGHT = TOURNAMENT_TEXT_WEIGHT + EMISSION_FLEX_POOL  # 0.40
+MAX_TEXT_TOURNAMENT_WEIGHT = TOURNAMENT_TEXT_WEIGHT + EMISSION_FLEX_POOL  # 0.70
 MAX_QUANT_TOURNAMENT_WEIGHT = TOURNAMENT_QUANT_WEIGHT + EMISSION_FLEX_POOL  # 0.60
-MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.50
-
-# Phase-in of compression's part of the flex pool. Compression always gets its whole minimum; its flex part is
-# scaled by ramp = clamp((now - QUANT_EMISSION_RAMP_START) / QUANT_EMISSION_RAMP_DAYS, 0, 1) and the part it has not
-# earned yet goes to text and image in proportion to their own flex parts. Bases stay within [minimum, maximum] and
-# sum to 1.0. None: the phase-in has not started and compression gets its minimum only. Set it to a timezone-aware
-# UTC moment, e.g. datetime(2026, 12, 1, tzinfo=timezone.utc).
-QUANT_EMISSION_RAMP_START: datetime | None = None
-QUANT_EMISSION_RAMP_DAYS = 28
+MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.60
 
 # Participation-driven auto-balancer for the flex pool. Each cycle the flex pool is split from the
-# rolling entrant counts of the last N completed tournaments of each type: an oversubscribed type
-# cedes flex toward a starved one. Minimums are never touched. See validator.scoring.emission_balance.
-EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = flex split at the minimums' ratio, higher = sharper reaction
+# rolling contender counts of the last N completed tournaments of each type (a contender
+# ranked above the boss in round 1; see emission_balance.tournament_contenders), on raw counts: a type with more
+# contenders cedes flex toward one with fewer. Minimums are never touched. See validator.scoring.emission_balance.
+EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = flex split equally, higher = sharper reaction
 EMISSION_BALANCE_ROLLING_WINDOW = 4      # last N completed tournaments of each type, the latest included
-EMISSION_MIN_ENTRANTS_FOR_BALANCE = 3    # ignore degenerate tournaments below this entrant count
+EMISSION_MIN_ENTRANTS_FOR_BALANCE = 3    # ignore degenerate tournaments below this contender count
+EMISSION_CONTENDER_SCAN_LIMIT = 12       # completed tournaments of a type looked at to fill the window
 
 # Burn and emission weight dynamics
 BURN_REDUCTION_RATE = 5.0

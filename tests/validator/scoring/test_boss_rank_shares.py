@@ -33,7 +33,7 @@ OTHER = "5Other"
 TID = "tourn"
 
 # The rank-weight ladder over three paid places.
-FIRST_SHARE, SECOND_SHARE, THIRD_SHARE = 16 / 21, 4 / 21, 1 / 21
+FIRST_SHARE, SECOND_SHARE, THIRD_SHARE = 0.85, 0.1125, 0.0375  # a new champion's crown split
 
 
 def _ranks(*rounds: dict[str, int]) -> TournamentRoundRanks:

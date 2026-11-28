@@ -267,6 +267,7 @@ def mock_tournament_sql():
         mock.get_all_scores_and_losses_for_task = AsyncMock(side_effect=get_mock_participant_scores)
         mock.get_task_winners = AsyncMock(return_value=MOCK_TASK_WINNERS)
         mock.get_latest_completed_tournament = AsyncMock(return_value=MOCK_TOURNAMENT)
+        mock.count_champion_defences = AsyncMock(return_value=0)
         yield mock
 
 
@@ -417,6 +418,7 @@ if __name__ == "__main__":
             mock_sql.get_tournament_participants = AsyncMock(return_value=MOCK_PARTICIPANTS)
             mock_sql.get_tournament_rounds = AsyncMock(return_value=MOCK_ROUNDS)
             mock_sql.get_tournament_tasks = AsyncMock(side_effect=get_mock_tasks_for_round)
+            mock_sql.count_champion_defences = AsyncMock(return_value=0)
             mock_sql.get_tournament_groups = AsyncMock(return_value=MOCK_GROUPS)
             mock_sql.get_tournament_group_members = AsyncMock(return_value=[
                 type('MockMember', (), {'hotkey': p.hotkey})() for p in MOCK_PARTICIPANTS

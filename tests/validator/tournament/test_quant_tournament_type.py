@@ -336,8 +336,8 @@ class TestEnrolmentFee:
     @pytest.mark.parametrize(
         ("tournament_type", "fee_rao"),
         [
-            (TournamentType.QUANT, 600_000_000),
-            (TournamentType.TEXT, 700_000_000),
+            (TournamentType.QUANT, 500_000_000),
+            (TournamentType.TEXT, 600_000_000),
             (TournamentType.IMAGE, 400_000_000),
         ],
     )
@@ -349,8 +349,8 @@ class TestEnrolmentFee:
         assert enrolment.enroll.await_args.args[2] == fee_rao
         assert enrolment.pinged_types == [tournament_type]
 
-    def test_quant_fee_constant_is_point_six_tao(self):
-        assert t_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO == 600_000_000
+    def test_quant_fee_constant_is_point_five_tao(self):
+        assert t_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO == 500_000_000
 
     @pytest.mark.parametrize(
         ("tournament_type", "pinned_commit"),
