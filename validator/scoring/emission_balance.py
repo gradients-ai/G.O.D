@@ -15,9 +15,8 @@ the minimums' ratio, larger values react harder to a given imbalance.
     wᵢ = minimumᵢ + EMISSION_FLEX_POOL · flex_shareᵢ
 
 Counts are contenders, not sign-ups: a challenger counts only if it ranked strictly above the boss in
-round 1 (round_results.count_round_one_above_boss). Entering a tournament and failing on purpose, or
-resubmitting the boss's code, cannot pull flex toward another type. When the round-1 ranking cannot be
-computed the tournament falls back to the hotkeys that completed a round-1 task.
+round 1 (round_results.count_round_one_above_boss). When the round-1 ranking cannot be computed the
+tournament falls back to the hotkeys that completed a round-1 task.
 """
 
 from statistics import mean

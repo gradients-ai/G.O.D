@@ -25,7 +25,7 @@ Each tournament's pool is its base share: a minimum plus a part of the share tha
 
 **How the floating share is computed** (`emission_balance.py`):
 
-1. For each of text, image and compression, take the contender counts of its last four completed tournaments with at least three contenders, the latest included. A contender is a challenger ranked strictly above the boss in round 1, ranked together with the boss as in the boss-rank rule (`count_round_one_above_boss` in `tournament/round_results.py`). A tie with the boss does not count. Where the boss has no round-1 result it ranks last, so every challenger with a valid round-1 result counts. If the round-1 ranking cannot be computed, the tournament counts the miners that completed a round-1 task instead (`count_round_one_completers`). A tournament's count is computed once and cached, since its round-1 results do not change. Pending, active and cancelled tournaments are not counted.
+1. For each of text, image and compression, take the contender counts of its last four completed tournaments with at least three contenders, the latest included. A contender is a challenger ranked above the boss in round 1 (`count_round_one_above_boss` in `tournament/round_results.py`). If that ranking cannot be computed, the miners that completed a round-1 task count instead. Counts are cached per tournament. Pending, active and cancelled tournaments are not counted.
 2. Average the counts. A tournament with no usable history counts as average-subscribed.
 3. Give each tournament a part of the floating share proportional to `minimum_share x (minimum_share / contenders) ^ alpha`.
 

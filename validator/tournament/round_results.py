@@ -2341,8 +2341,7 @@ async def round_ranks_with_boss(tournament_id: str, psql_db: PSQLDB) -> Tourname
 async def count_round_one_above_boss(tournament_id: str, psql_db: PSQLDB) -> int | None:
     """How many challengers ranked strictly above the boss in round 1, ranked together as in round_ranks_with_boss.
 
-    The emission balancer counts these as a tournament's contenders: entering and failing, or resubmitting the boss's
-    code, does not land above the boss. An entry tied with the boss is not above it. Where the boss has no round-1 result
+    The emission balancer counts these as a tournament's contenders. Where the boss has no round-1 result
     (tournaments from before the boss played round 1) it ranks behind every valid entry, so every challenger with a valid
     round-1 result counts. None when the tournament has no round 1.
     """
