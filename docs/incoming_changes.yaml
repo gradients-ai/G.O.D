@@ -58,7 +58,8 @@ changes:
       rest of the image equally. Full details are in PR #1479
       (https://github.com/gradients-ai/G.O.D/pull/1479). Synthetics will also get a bit harder: each
       task is built around one concept locked to a reference image, captions no longer describe the concept,
-      and the held-out test pairs are deliberately outside the training distribution.
+      and the held-out test pairs are deliberately outside the training distribution. Both changes will be
+      merged in time for the Monday 7 December tournament.
     why: >-
       Image training scripts were hitting a ceiling at the current difficulty, leaving little room to tell
       submissions apart. Harder tasks and evaluation give the best pipelines room to pull ahead again.
