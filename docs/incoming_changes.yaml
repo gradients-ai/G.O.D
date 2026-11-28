@@ -51,6 +51,27 @@ changes:
     docs: []
     shipped_on: null
 
+  - id: image-eval-hardening
+    title: Image evaluation update and harder synthetic image tasks
+    summary: >-
+      The image evaluation moves to higher noise levels, and edit tasks will weigh the edited region and the
+      rest of the image equally. Full details are in PR #1479
+      (https://github.com/gradients-ai/G.O.D/pull/1479). Synthetics will also get a bit harder: each
+      task is built around one concept locked to a reference image, captions no longer describe the concept,
+      and the held-out test pairs are deliberately outside the training distribution.
+    why: >-
+      Image training scripts were hitting a ceiling at the current difficulty, leaving little room to tell
+      submissions apart. Harder tasks and evaluation give the best pipelines room to pull ahead again.
+    areas: [image]
+    status: in_progress
+    date: 2026-12-07
+    miner_action: >-
+      Re-tune your image pipeline for the new evaluation, and make sure your LoRA learns the concept from the
+      images rather than the caption and generalises beyond the training contexts.
+    prs: [1479]
+    docs: [docs/miner_image.md, docs/image_tasks.md]
+    shipped_on: null
+
   - id: grpo-revamp
     title: GRPO task revamp
     summary: >-
