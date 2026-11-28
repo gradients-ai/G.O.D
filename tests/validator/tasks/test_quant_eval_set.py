@@ -7,11 +7,10 @@ import pytest
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.training_config import _process_instruct_dataset_fields
-from validator.evaluation.chat_labels import ChatLabelled
 from validator.evaluation.chat_labels import ChatMessage
-from validator.evaluation.chat_labels import label_chat
 from validator.evaluation.quant_loss import IGNORE_INDEX
 from validator.evaluation.quant_loss import QuantEvalExample
+from validator.tasks.quant_chat_labels import label_chat_as_text_eval
 from validator.tasks.quant_eval_set import SkipReason
 from validator.tasks.quant_eval_set import build_quant_eval_set
 from validator.tasks.quant_eval_set import instruct_prompt_and_completion
@@ -167,26 +166,25 @@ def _scored_text(example: QuantEvalExample) -> str:
     return "".join(chr(label) if label != IGNORE_INDEX else "_" for label in example.labels)
 
 
-def test_chat_labels_are_label_chats():
-    """The quant eval set and the standard eval share one chat rule: the example is label_chat's output, verbatim."""
+def test_chat_labels_are_the_text_eval_rule():
+    """The example is quant_chat_labels.label_chat_as_text_eval's output, verbatim, with the tokenizer's eos."""
     row = _chat_row(("system", "s"), ("user", "hi"), ("assistant", "yo"), ("user", "more"), ("assistant", "ok"))
     messages = [ChatMessage(role=turn["from"], content=turn["value"]) for turn in row["conversations"]]
 
-    expected = label_chat(FakeChatTokenizer(), messages)
+    expected = label_chat_as_text_eval(FakeChatTokenizer(), messages, EOS)
     example = _chat_example(row)
 
-    assert isinstance(expected, ChatLabelled)
     assert (example.input_ids, example.labels) == (expected.input_ids, expected.labels)
 
 
-def test_chat_supervises_every_assistant_turn_through_its_turn_end():
+def test_chat_supervises_the_content_of_every_assistant_turn():
     example = _chat_example(_chat_row(("system", "s"), ("user", "hi"), ("assistant", "yo"), ("user", "c"), ("assistant", "d")))
 
     full_text = "\x01<system>s</><user>hi</><assistant>yo</><user>c</><assistant>d</>"
     assert example.input_ids == _ids(full_text)
     assert (
         _scored_text(example)
-        == "_" * len("\x01<system>s</><user>hi</><assistant>") + "yo</>" + "_" * len("<user>c</><assistant>") + "d</>"
+        == "_" * len("\x01<system>s</><user>hi</><assistant>") + "yo" + "_" * len("</><user>c</><assistant>") + "d___"
     )
 
 
@@ -203,13 +201,13 @@ def test_chat_maps_custom_role_references():
     example = _chat_example(_chat_row(("human", "a"), ("gpt", "b")), dataset_type)
 
     assert example.input_ids == _ids("\x01<user>a</><assistant>b</>")
-    assert _scored_text(example).endswith("_b</>")
+    assert _scored_text(example).endswith("_b___")
 
 
 def test_user_last_chat_still_scores_its_earlier_assistant_turns():
     example = _chat_example(_chat_row(("user", "a"), ("assistant", "b"), ("user", "c")))
 
-    assert _scored_text(example) == "_" * len("\x01<user>a</><assistant>") + "b</>" + "_" * len("<user>c</>")
+    assert _scored_text(example) == "_" * len("\x01<user>a</><assistant>") + "b" + "_" * len("</><user>c</>")
 
 
 @pytest.mark.parametrize(

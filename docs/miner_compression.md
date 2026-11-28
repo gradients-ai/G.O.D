@@ -324,6 +324,7 @@ Losses are normalised: `r = test_loss / reference_loss`. The reference is the bf
 | Held-out split | the held-out split of the text task whose model you compress: `min(10% of rows, 1,000)` |
 | Held-out split, continuous-model tasks | up to 1,000 rows sampled from the given test split |
 | Tokenisation | once, with the input model's tokenizer, so every entry and the reference see identical token ids |
+| Scored tokens | the ones the text eval scores on the same row: an instruct row's completion and eos; for a chat row, the positions axolotl's `chat_template` rule labels: each assistant answer as located in the conversation that ends with it, plus the tokenizer's eos where the template puts it right after. A think block the template inserts before the last answer is not scored ([`quant_chat_labels.py`](../validator/tasks/quant_chat_labels.py)) |
 | Loss | mean over examples of each example's mean token loss |
 | Long examples | over 4,096 tokens, or at or over the model's context length, are dropped, not truncated |
 
