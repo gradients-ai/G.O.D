@@ -73,6 +73,31 @@ changes:
     docs: [docs/miner_image.md, docs/image_tasks.md]
     shipped_on: null
 
+  - id: reward-split-and-fees
+    title: New emission split, reign-based place shares and lower entry fees
+    summary: >-
+      This sets the numbers for the reward split announced in "Threshold recalibration and reward split".
+      Guaranteed minimums become text 0.25, compression 0.15 and image 0.15, and the share that floats by
+      participation grows from 0.25 to 0.45. Compression's floating share is no longer phased in: it competes for
+      it like text and image from day one. Participation now counts contenders, miners ranked above the boss in round 1,
+      rather than sign-ups. 1st place gets 85% of a tournament's share when a new boss takes the crown
+      and in its first defence, then 1.5625 points less per defence down to 60% at the 17th defence. The rest goes
+      75/25 to 2nd and 3rd, so 2nd rises to 30% and 3rd to 10%. Entry fees drop to 0.6 TAO for text (from 0.7) and 0.5 TAO for compression (from
+      0.6). Image stays at 0.4 TAO.
+    why: >-
+      A long-held crown should leave more on the table for the miners closing in on it, while a new boss still gets
+      a strong reward for taking it. A larger floating share lets emissions follow where competition is thin, and
+      counting only miners who beat the boss in round 1 keeps that share tied to real competition. Lower fees make
+      it cheaper to compete.
+    areas: [text, image, compression]
+    status: in_progress
+    date: 2026-12-07
+    miner_action: >-
+      Nothing. Only miners that rank above the boss in round 1 count toward a tournament's share of emissions.
+    prs: [1481]
+    docs: [docs/miner.md]
+    shipped_on: null
+
   - id: grpo-revamp
     title: GRPO task revamp
     summary: >-
