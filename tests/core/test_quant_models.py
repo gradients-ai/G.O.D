@@ -58,7 +58,12 @@ FREEFORM_TRAINING_DATA = {
     "quant_spec": None,
     "quant_target": FREEFORM_TARGET,
 }
-PROXY_FIELDS = {"github_repo": "https://github.com/org/repo", "gpu_ids": [0], "hotkey": "hk"}
+PROXY_FIELDS = {
+    "github_repo": "https://github.com/org/repo",
+    "gpu_ids": [0],
+    "hotkey": "hk",
+    "prebuilt_image": "registry.example:5000/god/trainers@sha256:abc",
+}
 
 
 @pytest.mark.parametrize(

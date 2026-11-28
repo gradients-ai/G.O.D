@@ -110,6 +110,8 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     # Both name directories on the trainer's volumes.
     if not is_plain_path_component(req.training_data.task_id) or not is_plain_path_component(req.hotkey):
         raise HTTPException(status_code=400, detail="task_id and hotkey must be plain names without path separators.")
+    if not req.prebuilt_image:
+        raise HTTPException(status_code=400, detail="prebuilt_image is required: the trainer never builds images.")
     task_key = (req.training_data.task_id, req.hotkey)
     bg_task = None
     async with _task_lock:

@@ -16,6 +16,7 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 
 | Path | Covers |
 | --- | --- |
+| `conftest.py` | Every training row's image is ready, so scheduler tests run without an image build box. |
 | `test_quant_tournament_type.py` | The compression tournament: scheduling, the first boss lookup, the entry fee, and the licence and decoder steps that apply to compression miners only. |
 | `test_next_tournament_dates_flag.py` | The next start date is advertised for every tournament. |
 | `test_pending_tournaments_nonblocking.py` | A pending tournament short of miners, or one that raises, does not block the others. |

@@ -91,9 +91,27 @@ def generate_trainer_config() -> dict[str, Any]:
             "(default: ~/.local/share/god-trainer/quant_decode): "
         )
         or None,
+        image_registry_username=input("📦 Enter the image registry read-only username (from the image build box): ")
+        or None,
+        image_registry_password=input("📦 Enter the image registry read-only password: ") or None,
     )
 
     return vars(config)
+
+
+def prompt_image_build_config() -> dict[str, str | None]:
+    """The image build box (ops/image_builder/README.md). Required: trainers never build, every job runs an image from it."""
+    keys = [
+        ("image_build_woodpecker_url", "Woodpecker URL of the image build box (https://<box>)"),
+        ("image_build_woodpecker_token", "Woodpecker API token"),
+        ("image_build_woodpecker_repo_id", "Woodpecker repo id of the snapshot repo (setup.sh configure-repo prints it)"),
+        ("image_build_snapshot_repo", "Snapshot repo URL (https://github.com/<owner>/<repo>.git)"),
+        ("image_build_snapshot_token", "GitHub token with read and write on the snapshot repo"),
+        ("image_build_registry", "Registry host:port on the image build box"),
+        ("image_build_registry_username", "Registry read-only username"),
+        ("image_build_registry_password", "Registry read-only password"),
+    ]
+    return {key: input(f"📦 {prompt}: ") or None for key, prompt in keys}
 
 
 def generate_validator_config(dev: bool = False) -> dict[str, Any]:
@@ -140,6 +158,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     s3_bucket_name = input("🎯 Enter your s3 bucket name: ")
     s3_region = input("🎯 Enter s3 region (default: us-east-1): ") or "us-east-1"
     discord_url = input("🎯 Enter your discord webhook url (optional): ") or None
+    image_build = prompt_image_build_config()
 
     frontend_api_key = generate_secure_password() if not frontend_api_key else frontend_api_key
     trainer_api_key = generate_secure_password(32) if not trainer_api_key else trainer_api_key
@@ -174,6 +193,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         database_url=database_url,
         postgres_profile=postgres_profile,
         discord_webhook=discord_url,
+        **image_build,
     )
     return vars(config)
 

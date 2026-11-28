@@ -197,6 +197,15 @@ class TrainerProxyRequest(BaseModel):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prebuilt_image: str | None = Field(
+        default=None,
+        description=(
+            "The job's image, built before training on the image build box, as registry/repo@sha256:digest. The trainer "
+            "pulls and runs it; it never builds the repository's Dockerfile, so its training endpoint refuses a request "
+            "without one. None only on requests the trainer rebuilds from its job history (the decode re-run)."
+        ),
+        examples=["185.141.218.72:5000/god/trainers@sha256:4eabcff204e555b1db0f13b07bf37ead6098a9d8df806cdb8141647c64abc7bf"],
+    )
 
     @field_validator("github_repo")
     @classmethod
@@ -237,6 +246,7 @@ class TrainerTaskLog(TrainerJob):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prebuilt_image: str | None = None
     wandb_url: str | None = None
     quant_decode: QuantDecodeResult | None = None
 

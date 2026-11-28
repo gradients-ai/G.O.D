@@ -141,6 +141,7 @@ task dbup
 | `20261113160000_continuous_sft_chunk_scheme.sql` | Continuous-task chunk scheme: adds `continuous_sft_state.chunk_scheme`, doubles every lineage cursor once, and records the lineage position each continuous task was created at (`continuous_sft_task_chunks`). Apply it between two tournaments, in the same window as the content service's chunk scheme switch. |
 | `20261113170000_tournament_boss_rank_comparisons.sql` | Create `tournament_boss_rank_comparisons`. |
 | `20261114120000_quant_calibration_required.sql` | `tasks_quant_calibration_required` CHECK (NOT VALID): a compression task past prep has its calibration set. |
+| `20261125170000_tournament_images.sql` | Add `tournament_images`: the trainer image built once per tournament participant and Dockerfile variant. |
 
 ## See also
 

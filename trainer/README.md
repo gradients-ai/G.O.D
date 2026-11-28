@@ -1,6 +1,6 @@
 # Trainer
 
-The service that takes jobs from the validator, clones miner repositories, builds their images, runs them on GPUs, tracks job state and uploads the results.
+The service that takes jobs from the validator, clones miner repositories, pulls their prebuilt images, runs them on GPUs, tracks job state and uploads the results.
 
 ## Contents
 
@@ -26,25 +26,17 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `quant_calibration.py` | Fetches a task's calibration set and writes it into the cache volume for the miner. |
 | `quant_decode/` | Sandbox that runs a freeform decoder, the decoded-output check and the re-run CLI. |
 | `quant_upload_check.py` | Checks a compression task's output against its `quant_manifest.json` before upload. |
-| `runtime.py` | Docker orchestration: download, model prep, image build, training, upload, decode. |
+| `runtime.py` | Docker orchestration: download, model prep, image pull, training, upload, decode. |
 | `telemetry.py` | Logging setup. |
 | `training_config.py` | Writes training config files and reward function files. |
 | `training_paths.py` | Paths used inside training containers. |
 
-## Image builds
+## Images
 
-- Miner images are built with the Docker layer cache. A build reuses a layer only where it has the same parent layer and the same instruction, and for `COPY` and `ADD` the same file contents. A retry resumes after its last finished step, and a build that starts with the same steps as an earlier one skips them.
-- A build never keeps a layer made more than `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` ago (default 24), so a step whose result changes over time, such as an install without pinned versions, is not reused for longer. A build that takes such a layer from the cache is stopped and run again without the cache, inside the same time limit. Later builds reuse the new layers.
-- `TRAINER_IMAGE_BUILD_NO_CACHE=true` builds every image from scratch and empties the cache after every job.
-- A base image tag stays at the copy first pulled on the host. `TRAINER_IMAGE_BUILD_PULL=true` asks the registry for a newer one on every build.
-- A build has `TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES` (default 45). The stale-job grace is 10 minutes more than that.
-- A build whose step failed is detected by the missing image tag. The job fails at the build stage with `Docker image build failed: no image ...`.
-- Before every compression-task build, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the checkout are logged as `[REVIEW] ...`. This never fails the job.
-- After each job the image's tag and top layer are removed. The layers under it stay as dangling images: they are the layer cache, together with the finished steps of failed and timed-out builds.
-- The cache is emptied all at once to give its disk back, by removing every dangling image. This happens when it has not been emptied for `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS`, or when the disk under Docker's data directory is at least `TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT` full (default 80). Layers under the image of a running job stay until that job ends. The time it was last emptied is kept in `trainer/image_build_cache_state.json`, so a restart does not extend it.
-- The disk limit counts everything on that disk, not only images. If the disk is still over the limit after the cache was emptied, the trainer logs a warning: the cache is then emptied on every cleanup and builds reuse little. Free the disk or raise the limit.
-- The check runs after each job and in the periodic cleanup, but only while no image build is in progress on the trainer (a build abandoned on timeout counts until the daemon ends it).
-- Emptying the cache also runs the host-wide BuildKit cache prune while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
+- The trainer never builds an image. Every job carries `prebuilt_image`, built before training on the image build box ([ops/image_builder/README.md](../ops/image_builder/README.md)), as `registry/repo@sha256:digest`.
+- The trainer pulls it by digest while the job's data downloads, with the `IMAGE_REGISTRY_USERNAME` and `IMAGE_REGISTRY_PASSWORD` login. Layers come straight from the registry's bucket. A failed pull fails the job at the image stage with `Image pull failed: ...`.
+- The image is removed after the job. Its layers stay only while another job's image uses them.
+- Before every compression job, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the clone are logged as `[REVIEW] ...`. This never fails the job.
 
 ## CPU and memory shares
 

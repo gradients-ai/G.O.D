@@ -1,0 +1,58 @@
+{
+  "distSpecVersion": "1.1.1",
+  "storage": {
+    "rootDirectory": "/var/lib/zot",
+    "dedupe": true,
+    "remoteCache": false,
+    "gc": true,
+    "gcDelay": "1h",
+    "gcInterval": "6h",
+    "redirectBlobURL": true,
+    "retention": {
+      "dryRun": false,
+      "delay": "24h",
+      "policies": [
+        {
+          "repositories": ["**"],
+          "deleteReferrers": true,
+          "deleteUntagged": true,
+          "keepTags": [{"patterns": [".*"], "pushedWithin": "${IMAGE_RETENTION_HOURS}h"}]
+        }
+      ]
+    },
+    "storageDriver": {
+      "name": "s3",
+      "rootdirectory": "${S3_PREFIX}",
+      "region": "${S3_REGION}",
+      "regionendpoint": "${S3_ENDPOINT}",
+      "bucket": "${S3_BUCKET}",
+      "accesskey": "${S3_ACCESS_KEY}",
+      "secretkey": "${S3_SECRET_KEY}",
+      "forcepathstyle": true,
+      "secure": true,
+      "skipverify": false,
+      "chunksize": "33554432"
+    }
+  },
+  "http": {
+    "address": "0.0.0.0",
+    "port": "5000",
+    "readTimeout": "2h",
+    "writeTimeout": "2h",
+    "compat": ["docker2s2"],
+    "tls": {"cert": "/certs/server.crt", "key": "/certs/server.key"},
+    "auth": {"htpasswd": {"path": "/etc/zot/htpasswd"}, "failDelay": 1},
+    "accessControl": {
+      "repositories": {
+        "**": {
+          "policies": [
+            {"users": ["builder"], "actions": ["read", "create", "update", "delete"]},
+            {"users": ["trainer"], "actions": ["read"]}
+          ],
+          "defaultPolicy": []
+        }
+      }
+    }
+  },
+  "log": {"level": "info"}
+}

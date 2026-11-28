@@ -2,10 +2,6 @@ import logging
 import os
 from pathlib import Path
 
-from core.constants.docker import DEFAULT_TEXT_DOCKERFILE_PATH as DEFAULT_TEXT_DOCKERFILE_PATH
-from core.constants.docker import LEGACY_TEXT_DOCKERFILE_PATH as LEGACY_TEXT_DOCKERFILE_PATH
-from core.constants.docker import TEXT_DOCKERFILE_PATHS as TEXT_DOCKERFILE_PATHS
-
 
 _logger = logging.getLogger(__name__)
 
@@ -35,15 +31,6 @@ def _env_number(name: str, default: float, minimum: float, parse: type) -> float
     return value
 
 
-# Training repository Dockerfiles (the text ones are defined once in core.constants.docker, shared with the validator lint)
-DEFAULT_IMAGE_DOCKERFILE_PATH = "ops/docker/standalone-image-trainer.dockerfile"
-DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "ops/docker/standalone-image-toolkit-trainer.dockerfile"
-
-LEGACY_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
-LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
-
-IMAGE_DOCKERFILE_PATHS = (DEFAULT_IMAGE_DOCKERFILE_PATH, LEGACY_IMAGE_DOCKERFILE_PATH)
-IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH)
 
 
 # Runtime state
@@ -91,31 +78,16 @@ QUANT_DECODE_MIN_MEMORY_GB = 8  # memory floor for both decoder sandbox phases
 CACHE_CLEANUP_CUTOFF_HOURS = 72
 STALE_CONTAINER_MAX_AGE_HOURS = 1  # a created/exited trainer container older than this is removed by cleanup.py
 MODEL_PREP_TIMEOUT_MINUTES = 60
-DOCKER_BUILD_TIMEOUT_MINUTES = int(os.getenv("TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES", "45"))
-# Added to a job's hours for its stale deadline (cleanup.py). The clock starts when the job is accepted and
-# restarts when its training container starts, so for a job of well under an hour the grace is what covers the image
-# build. It applies after the restart as well, so a job that hangs after training is noticed that much later.
-STALE_TASK_GRACE_MINUTES = 10 + DOCKER_BUILD_TIMEOUT_MINUTES
-# Stopping a build that reused a too-old cached layer (runtime.BuildStepContainers): a step container the daemon has
-# created but not started yet cannot be killed, so the kill is retried until it lands.
-BUILD_STOP_KILL_RETRY_SECONDS = 0.5
-BUILD_STOP_KILL_TIMEOUT_SECONDS = 10
-
-# Miner images are built with the Docker layer cache, so a retry or a build that starts with the same steps does not
-# download them again. TRAINER_IMAGE_BUILD_NO_CACHE=true builds every image from scratch and empties the cache after
-# every job.
-IMAGE_BUILD_NO_CACHE = os.getenv("TRAINER_IMAGE_BUILD_NO_CACHE", "false").lower() == "true"
-# Ask the registry for a newer base image on every build. Off: a base tag stays at the copy first pulled on this host.
-IMAGE_BUILD_PULL_BASE = os.getenv("TRAINER_IMAGE_BUILD_PULL", "false").lower() == "true"
-# A build never keeps a cached layer made longer ago than this, and the layer cache is emptied (trainer.image_builds)
-# once it has gone this long without being emptied, and whenever the disk under Docker's data directory is at least
-# this full. That disk may hold more than images: if it stays over the limit, the cache is emptied on every cleanup.
-IMAGE_BUILD_CACHE_MAX_AGE_HOURS = float(os.getenv("TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS", "24"))
-IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT = float(os.getenv("TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT", "80"))
-IMAGE_BUILD_CACHE_STATE_PATH = "trainer/image_build_cache_state.json"
-# When the layer cache is emptied, the trainer also runs a host-wide `docker builder prune`, which wipes every other
-# build cache on the host. On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
-PRUNE_HOST_BUILD_CACHE = os.getenv("TRAINER_PRUNE_BUILD_CACHE", "true").lower() == "true"
+# Every job runs an image built before it (TrainerProxyRequest.prebuilt_image, from the image build box, see
+# ops/image_builder/); the trainer never builds. It pulls the image with this read-only registry login.
+IMAGE_REGISTRY_USERNAME = os.getenv("IMAGE_REGISTRY_USERNAME") or None
+IMAGE_REGISTRY_PASSWORD = os.getenv("IMAGE_REGISTRY_PASSWORD") or None
+# Read timeout of the Docker API calls that pull the image: a multi-GB layer streams for minutes.
+PREBUILT_IMAGE_PULL_TIMEOUT_SECONDS = 1800
+# Added to a job's hours for its stale deadline (cleanup.py). The clock starts when the job is accepted and restarts
+# when its training container starts, so for a job of well under an hour the grace is what covers the image pull. It
+# applies after the restart as well, so a job that hangs after training is noticed that much later.
+STALE_TASK_GRACE_MINUTES = 10 + PREBUILT_IMAGE_PULL_TIMEOUT_SECONDS // 60
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3
 

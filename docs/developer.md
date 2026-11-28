@@ -28,6 +28,7 @@ Each directory's README lists its files. Start with [validator/README.md](../val
 | Miner | `task miner` | `7999` | Returns the miner's training repository for each tournament type. |
 | Trainer | `task trainer` | `8001` | Runs training jobs on GPUs and reports GPU availability to the validator. |
 | Validator | `task validator` | `VALIDATOR_PORT` (default `9001`) | Creates tasks and tournaments, calls miners and trainers, evaluates, sets weights. |
+| Image build box | `ops/image_builder/setup.sh` | `443`, `5000` | Builds every training job's image before training and serves it to the trainers, which never build. See [ops/image_builder/README.md](../ops/image_builder/README.md). |
 
 The validator needs Postgres, Redis, S3-compatible storage, Docker and access to the Bittensor chain. Provision Postgres and the object store yourself: the compose stack starts Redis but no database. Set `DATABASE_URL` in `.vali.env`: dbmate (`task dbup`) reads only that variable. A trainer needs Docker with GPU support, Hugging Face credentials and disk for the model and dataset caches.
 
@@ -101,6 +102,9 @@ Written by `task config`:
 | `TRAINER_API_KEY` | `validator/infrastructure/trainer_auth.py` | Shared key sent as the `X-Trainer-Auth` header on every request to a trainer. Every trainer must have the same value in its `.trainer.env`. Generated for you. |
 | `REFRESH_NODES` | `validator/app/config.py` | Whether to refresh nodes from the metagraph. |
 | `DISCORD_WEBHOOK` | `validator/app/config.py` | Optional webhook for alerts. |
+| `IMAGE_BUILD_WOODPECKER_URL`, `IMAGE_BUILD_WOODPECKER_TOKEN`, `IMAGE_BUILD_WOODPECKER_REPO_ID` | `validator/tournament/image_builds.py` | Required, with the five below: training images are built on the [image build box](../ops/image_builder/README.md). Without all eight, no image is built and tournament training waits. `https://<box>`, its Woodpecker API token, and the repo id `setup.sh configure-repo` prints. |
+| `IMAGE_BUILD_SNAPSHOT_REPO`, `IMAGE_BUILD_SNAPSHOT_TOKEN` | `validator/tournament/image_builds.py` | The private snapshot repo (`https://github.com/<owner>/<repo>.git`) and a token with read and write on it. |
+| `IMAGE_BUILD_REGISTRY`, `IMAGE_BUILD_REGISTRY_USERNAME`, `IMAGE_BUILD_REGISTRY_PASSWORD` | `validator/tournament/image_builds.py` | `<box>:5000`, and the read-only `trainer` login (`state/trainer.pass` on the box), to read image digests. |
 
 Added by hand:
 
@@ -134,6 +138,7 @@ Written by `task trainer-config`:
 | `QUANT_DECODE_WORK_ROOT` | `trainer/constants.py` | Optional. Directory for the freeform decode. Default `~/.local/share/god-trainer/quant_decode`. |
 | `TRAINER_API_KEY` | `trainer/auth.py` | Required. The `TRAINER_API_KEY` from the validator's `.vali.env`. Every request must carry it in the `X-Trainer-Auth` header; without it set, the trainer rejects every request with 403 and logs an error at startup. |
 | `ORCHESTRATOR_IPS` | `trainer/auth.py` | Required. Comma-separated validator IPs allowed to call the trainer. There is no default; `127.0.0.1` is always allowed (still with the key). `ORCHESTRATOR_IP` is read when `ORCHESTRATOR_IPS` is unset. |
+| `IMAGE_REGISTRY_USERNAME`, `IMAGE_REGISTRY_PASSWORD` | `trainer/constants.py` | Required. Read-only login to the image build box's registry, to pull each job's image. |
 
 Added by hand:
 
@@ -141,12 +146,6 @@ Added by hand:
 | --- | --- | --- |
 | `MODEL_HASH_SALT` | `trainer/model_artifacts.py` | Salt for the anonymous model cache directory names. Keep it secret and stable. |
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Same value as on the validator. |
-| `TRAINER_PRUNE_BUILD_CACHE` | `trainer/constants.py` | Default `true`. Set `false` to keep the host Docker build cache. |
-| `TRAINER_IMAGE_BUILD_NO_CACHE` | `trainer/constants.py` | Default `false`. Set `true` to build every miner image from scratch. |
-| `TRAINER_IMAGE_BUILD_PULL` | `trainer/constants.py` | Default `false`. Set `true` to check the registry for a newer base image on every build. |
-| `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` | `trainer/constants.py` | Default `24`. A build does not reuse a layer older than this, and the image layer cache is emptied this often. |
-| `TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT` | `trainer/constants.py` | Default `80`. The image layer cache is emptied when Docker's disk is this full. |
-| `TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES` | `trainer/constants.py` | Default `45`. Time limit of one miner image build. |
 | `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS` | `trainer/constants.py` | Optional. How long a decoded upload that fails on network errors is retried in the background before it counts as an infra error. Default `7200`; `0` turns the retry off. See [Pending uploads](../trainer/quant_decode/README.md#pending-uploads). |
 | `QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_GB` | `trainer/constants.py` | Optional. Decoded files are kept for an upload retry only while the decode work root has this much disk free. Default `50`. |
 | `QUANT_DECODE_UPLOAD_PART_BYTES`, `QUANT_DECODE_UPLOAD_PARALLEL`, `QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES`, `QUANT_DECODE_UPLOAD_HTTP_*`, `QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND` | `trainer/constants.py` | Optional. Tuning of decoded-file uploads for a slow or lossy link. Defaults and meaning: [`trainer/quant_decode/README.md`](../trainer/quant_decode/README.md#decode-job). |
@@ -286,7 +285,7 @@ The validator then reads the trainer's GPUs from port `8001` (or from `<ip>:<por
 | `GET /v1/tournament_orchestrator/trainers` | Lists the registered trainers. |
 | `DELETE /v1/tournament_orchestrator/remove_trainer/<ip>` | Removes a trainer. |
 
-The trainer builds each miner's Dockerfile, runs the training container and streams its logs. Outputs go to the `checkpoints` Docker volume, models and datasets to the `cache` volume, and finished models to Hugging Face. A training container mounts only its own job's directory of the `checkpoints` volume (`<task_id>/<hotkey>`), and the `cache` volume read-only.
+The trainer pulls each job's image (built by the [image build box](../ops/image_builder/README.md); trainers never build), runs the training container and streams its logs. Outputs go to the `checkpoints` Docker volume, models and datasets to the `cache` volume, and finished models to Hugging Face. A training container mounts only its own job's directory of the `checkpoints` volume (`<task_id>/<hotkey>`), and the `cache` volume read-only.
 
 Endpoint paths are defined in `validator/infrastructure/service_constants.py` and registered in `trainer/endpoints.py`. Every trainer route requires both an allowed source IP (`ORCHESTRATOR_IPS`) and the `X-Trainer-Auth: <TRAINER_API_KEY>` header (`trainer/auth.py`); the validator adds the header from its own `TRAINER_API_KEY`.
 

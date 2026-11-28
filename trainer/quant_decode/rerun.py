@@ -67,6 +67,7 @@ def _proxy_request(job: TrainerTaskLog) -> TrainerProxyRequest:
         github_commit_hash=job.github_commit_hash,
         github_token=job.github_token,
         requested_datasets=job.requested_datasets,
+        prebuilt_image=job.prebuilt_image,
     )
 
 

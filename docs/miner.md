@@ -72,7 +72,7 @@ Every repository needs the following, whatever the tournament.
 | --- | --- |
 | Licence | A `LICENSE` and a `NOTICE` file at the repository root, identical to this repository's. Your guide's At a glance says where enrolment reads them. |
 | Readable source | No obfuscated or compiled-only code, checked by a scan at the pinned commit. |
-| Dockerfile | The trainer builds a Dockerfile from your repository. It looks under `ops/docker/`, then for the same file name under `dockerfiles/`. Your guide names the file. |
+| Dockerfile | The validator builds a Dockerfile from your repository. It looks under `ops/docker/`, then for the same file name under `dockerfiles/`. Your guide names the file. |
 | CUDA | Trainer hosts support CUDA 12.8 or lower. Keep your base image and wheels within it. |
 | Contents | What your repository and image may contain: see [Policy](#policy). |
 
@@ -89,11 +89,13 @@ Each file is compared line by line with this repository's `LICENSE.md` and `NOTI
 
 ## How your code runs
 
+Your image is built once, before your first task: when the tournament starts, from your pinned commit, on the validator's build server, with the repository root as build context. Each Dockerfile your guide names is built when present. Every task of yours in the tournament runs that exact image.
+
 For each task the trainer does this:
 
 1. Clones your repository at the pinned commit.
-2. Downloads the task's model and data into `/cache`.
-3. Builds your Dockerfile with the repository root as build context.
+2. Downloads the task's model and data into `/cache`, and pulls your image.
+3. Waits until your image is built, if it is not yet.
 4. Starts your container with the task's CLI arguments and environment.
 5. Waits until the container exits or the deadline passes.
 6. Uploads your output to a public Hugging Face repo for evaluation. What is uploaded is in your guide's output contract.
@@ -104,7 +106,7 @@ The held-out split used for scoring is never given to your container.
 
 | Limit | Value |
 | --- | --- |
-| Image build | 45 minute limit. Layers are cached on the trainer for up to a day: a step is reused when the layer below it and the instruction (for `COPY` and `ADD`, the file contents) are unchanged. Pin versions if a step must not reuse an earlier result. The build context is a fresh clone of your repository, and its `.git` directory differs between clones: `COPY . .` and every step after it are not reused unless `.git` is in your `.dockerignore`, so put the heavy installs before it. |
+| Image build | 45 minute limit, up to three attempts. If every attempt fails, your tasks that need the image fail. Base images are pulled fresh and layers are cached on the build server: a step is reused when the layer below it and the instruction (for `COPY` and `ADD`, the file contents) are unchanged. Pin versions if a step must not reuse an earlier result. |
 | GPUs | H100s, and only those assigned to the task. Counts are in the guides. |
 | Memory | An equal share of the host's RAM per GPU, after a reserve for the host (10%, at least 16 GB). |
 | CPU | An equal share of the host's physical cores per GPU, pinned (`cpuset`), local to the GPU where the host reports it. A small reserve stays with the host. No other job runs on these cores. |
@@ -243,7 +245,7 @@ The validator tests the token against the GitHub repository API. A token that do
 
 Every entry needs a full commit SHA, a pass on the obfuscation scan and the licence files ([Training repository](#training-repository)). A guide lists any check its tournament adds.
 
-Enrolment does not require a Dockerfile. A missing one fails the job when the trainer starts it.
+Enrolment does not require a Dockerfile. A missing one fails your image build when the tournament starts, and with it your tasks.
 
 ### One entry per miner
 
@@ -449,7 +451,7 @@ These lines are tournament policy. The automated checks are a floor, not the ful
 | Not enrolled | The service was not answering at the enrolment pass, a branch name was returned as `commit_hash`, a licence or obfuscation check failed, the balance was too low, or the entry was a duplicate by IP, GitHub account or coldkey. |
 | Enrolled in a tournament you did not mean to enter | Your endpoint answered it with a repository. See [The endpoint response](#the-endpoint-response). |
 | Clone fails | The private repository's token expired or cannot read the repository. |
-| Job fails before training | A Dockerfile your guide names is missing from your repository, or the build passed its time limit. |
+| Job fails before training | A Dockerfile your guide names is missing from your repository, or your image build failed every attempt. |
 | Download fails inside the container | The container has no internet. Read the task's files from `/cache`. |
 | Write fails | The path is under `/cache`, which is read-only. Write under `/app/checkpoints`. |
 | Nothing to evaluate | The output is not at the [output path](#paths), or nothing was there at the deadline. |

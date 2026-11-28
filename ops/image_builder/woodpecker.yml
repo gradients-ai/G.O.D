@@ -1,0 +1,47 @@
+# The build recipe. `setup.sh configure-repo` commits it as .woodpecker.yml on main of the snapshot repo, where
+# Woodpecker reads it. It builds one tournament trainer image from a snapshot branch and pushes it to Zot.
+#
+# Runs only when the validator starts it through the Woodpecker API (event: manual), with these variables:
+#   SNAPSHOT       snapshot branch, t/<tournament_id>/<source>
+#   DOCKERFILE     Dockerfile path inside the snapshot
+#   IMAGE          target in the registry, god/trainers:<tournament_id>-<source>-<variant>
+#   REGISTRY       registry host:port
+#   SNAPSHOT_REPO  https URL of the snapshot repo
+# Woodpecker substitutes $VAR in this file, so shell variables are written as $$VAR.
+when:
+  - event: manual
+
+skip_clone: true
+
+steps:
+  - name: build-and-push
+    image: docker:29-cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker:/root/.docker   # the buildx builder "god" and the registry builder login (setup.sh)
+    environment:
+      GH_TOKEN:
+        from_secret: snapshot_read_token
+    commands:
+      - apk add --no-cache git >/dev/null
+      - |
+        set -eu
+        test -n "$${SNAPSHOT:-}" && test -n "$${DOCKERFILE:-}" && test -n "$${IMAGE:-}" \
+          && test -n "$${REGISTRY:-}" && test -n "$${SNAPSHOT_REPO:-}" || { echo "missing a build variable"; exit 2; }
+        printf '#!/bin/sh\ncase "$$1" in Username*) echo x-access-token;; *) echo "$$GH_TOKEN";; esac\n' > /tmp/askpass
+        chmod 700 /tmp/askpass
+        GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/askpass git -c credential.helper= clone -q --depth 1 -b "$$SNAPSHOT" \
+          "$$SNAPSHOT_REPO" /tmp/src
+        rm -f /tmp/askpass
+        for attempt in 1 2 3; do
+          if timeout -k 60 2700 docker buildx build --builder god --pull --progress=plain --provenance=false --sbom=false \
+              -f "/tmp/src/$$DOCKERFILE" \
+              --output "type=image,name=$$REGISTRY/$$IMAGE,push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true" \
+              --metadata-file /tmp/meta.json /tmp/src; then
+            echo "DIGEST $$(sed -n 's/.*"containerimage.digest": *"\([^"]*\)".*/\1/p' /tmp/meta.json)"
+            exit 0
+          fi
+          echo "attempt $$attempt failed"
+          sleep $$((attempt * 30))
+        done
+        exit 1

@@ -1,0 +1,54 @@
+# The image build box: Zot (registry, images in an S3-compatible bucket, pulls redirected to the bucket) and Woodpecker
+# (server and agent). BuildKit runs as the buildx builder "god" that setup.sh creates. Values come from .env.
+services:
+  zot:
+    image: ghcr.io/project-zot/zot-linux-amd64:v2.1.23
+    container_name: zot
+    restart: unless-stopped
+    network_mode: host   # serves :5000 directly, no port proxy in the upload path
+    volumes:
+      - ./state/zot-config.json:/etc/zot/config.json:ro
+      - ./state/htpasswd:/etc/zot/htpasswd:ro
+      - ./state/certs:/certs:ro
+      - zot-meta:/var/lib/zot   # dedupe cache and metadata; the images themselves are in the bucket
+
+  woodpecker-server:
+    image: woodpeckerci/woodpecker-server:v3.21.0
+    container_name: woodpecker-server
+    restart: unless-stopped
+    user: "0:0"   # reads the root-owned certificate key
+    ports: ["443:443"]
+    environment:
+      WOODPECKER_HOST: https://${BUILD_BOX_HOST}
+      WOODPECKER_SERVER_CERT: /certs/server.crt
+      WOODPECKER_SERVER_KEY: /certs/server.key
+      WOODPECKER_SERVER_ADDR: 127.0.0.1:8000   # its http->https redirect stays off port 80, which certificate renewals use
+      WOODPECKER_GITHUB: "true"
+      WOODPECKER_GITHUB_CLIENT: ${WOODPECKER_GITHUB_CLIENT}
+      WOODPECKER_GITHUB_SECRET: ${WOODPECKER_GITHUB_SECRET}
+      WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET}
+      WOODPECKER_ADMIN: ${WOODPECKER_ADMIN}
+      WOODPECKER_OPEN: "false"
+    volumes:
+      - ./state/certs:/certs:ro
+      - woodpecker-data:/var/lib/woodpecker
+
+  woodpecker-agent:
+    image: woodpeckerci/woodpecker-agent:v3.21.0
+    container_name: woodpecker-agent
+    restart: unless-stopped
+    depends_on: [woodpecker-server]
+    environment:
+      WOODPECKER_SERVER: woodpecker-server:9000   # gRPC stays on the compose network
+      WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET}
+      WOODPECKER_MAX_WORKFLOWS: ${IMAGE_BUILD_CONCURRENCY:-3}
+      WOODPECKER_BACKEND: docker
+      WOODPECKER_HOSTNAME: god-image-builder
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - woodpecker-agent:/etc/woodpecker
+
+volumes:
+  zot-meta: {}
+  woodpecker-data: {}
+  woodpecker-agent: {}
