@@ -128,11 +128,6 @@ of the variance that comes from which noise levels and noise samples a seed happ
 draw. The captioned and empty-prompt passes see identical noise and timesteps for each
 case. On the ComfyUI path the strata are fixed levels, each with several noise draws.
 
-Image L2 differences between trained LoRAs are tenths of a percent, consistently
-across seeds. The crown margin is set just above the gap between two trainings of the
-same repository: a challenger must beat the boss's loss by `IMAGE_CROWN_WIN_MARGIN`
-(0.15%) on a task to win it.
-
 Per-candidate compute is held fixed so a bigger test split does not add time.
 `IMAGE_OBJECTIVE_EVAL_SAMPLES`, `IMAGE_OBJECTIVE_EVAL_REPEATS`, `IMAGE_EVAL_STRATA`
 and `IMAGE_EVAL_NOISES` override the defaults.

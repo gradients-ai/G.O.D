@@ -183,8 +183,8 @@ The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). 
 
 | Outcome | Task score |
 | --- | --- |
-| Win | at least 0.15% lower than the boss's, or a valid result where the boss has none |
-| Within the smaller allowance | lower than the boss's, by less than 0.15% |
+| Win | at least 1% lower than the boss's, or a valid result where the boss has none |
+| Within the smaller allowance | lower than the boss's, by less than 1% |
 | Within the larger allowance | equal to the boss's, or at most 1% higher |
 | Beyond both | more than 1% higher than the boss's, or no valid result from the challenger |
 

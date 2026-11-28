@@ -674,6 +674,5 @@ TEXT_CROWN_WIN_MARGIN = 0.01
 
 # An image task is a win when the challenger's weighted loss is lower than the boss's by at least this fraction of the boss's
 # loss (see challenger_beats_boss). The task is decided on the scalar alone, with no paired test; any other result is a non-win
-# banded by CROWN_LARGER_ALLOWANCE. Image L2 differences between trained LoRAs are tenths of a percent, so the margin sits
-# just above the gap between two trainings of the same repo (about 0.1%).
-IMAGE_CROWN_WIN_MARGIN = 0.0015
+# banded by CROWN_LARGER_ALLOWANCE.
+IMAGE_CROWN_WIN_MARGIN = 0.01

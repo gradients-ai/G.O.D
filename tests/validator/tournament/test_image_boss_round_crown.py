@@ -40,7 +40,7 @@ BOSS_LOSS = 1.0
 # The contender's loss against a boss loss of 1.0.
 CLEAR_WIN = 0.9
 WIN = 0.99  # exactly 1% lower: a win
-SMALLER = 0.999  # lower, short of a win (0.15% margin): within the smaller allowance
+SMALLER = 0.995  # lower, short of a win: within the smaller allowance
 LEVEL = 1.0  # within the larger allowance
 LIMIT = 1.01  # exactly 1% higher: the edge of the larger allowance
 BEYOND = 1.02  # beyond both

@@ -324,7 +324,7 @@ Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../valid
 | --- | --- | --- | --- |
 | Text | Instruct, continuous, DPO | task score | at least 1% better, and a pass on the paired per-example test |
 | Text | GRPO | task score | at least 1% better |
-| Image | every task | loss on held-out images | at least 0.15% lower |
+| Image | every task | loss on held-out images | at least 1% lower |
 | Compression | Fixed | normalised loss `r` | at least 1% lower, and a pass on the paired per-example test |
 | Compression | Freeform | effective size `S`: bytes, penalised above the loss bar | at least 3% lower |
 

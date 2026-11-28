@@ -102,7 +102,7 @@ class TestTheSharedVerdict:
     def test_the_constants(self):
         assert (t_cst.CROWN_TASKS, t_cst.CROWN_MAX_NON_WINS) == (7, 2)
         assert t_cst.TEXT_CROWN_WIN_MARGIN == 0.01
-        assert t_cst.IMAGE_CROWN_WIN_MARGIN == 0.0015
+        assert t_cst.IMAGE_CROWN_WIN_MARGIN == 0.01
         assert t_cst.CROWN_LARGER_ALLOWANCE == 0.01
         assert t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN == 0.03
         assert t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT == 0.01
@@ -188,16 +188,16 @@ class TestImageAgainstTheBoss:
         assert not text_needs_paired_test(TaskType.IMAGETASK)
 
     @pytest.mark.parametrize("boss", [1.0, 1.15, 2.3, 0.7, 123.456789])
-    def test_exactly_the_margin_lower_is_a_win(self, boss):
-        result = image_head_to_head("t", "x", boss, boss * (1 - t_cst.IMAGE_CROWN_WIN_MARGIN))
+    def test_exactly_one_percent_lower_is_a_win(self, boss):
+        result = image_head_to_head("t", "x", boss, boss * 0.99)
 
         assert result.is_win and result.task_type == TaskType.IMAGETASK
 
     @pytest.mark.parametrize(
         "challenger, outcome",
         [
-            (0.9985 * (1 + 1e-6), SMALLER),  # lower, short of the 0.15% win margin
-            (0.999, SMALLER),
+            (0.99 * (1 + 1e-6), SMALLER),  # lower, short of the win margin
+            (0.995, SMALLER),
             (1.0 - 1e-12, SMALLER),
             (1.0, LARGER),  # equal
             (1.0 + 1e-12, LARGER),
@@ -242,7 +242,7 @@ class TestImageAgainstTheBoss:
     def _seven(*challengers: float | None) -> list[HeadToHead]:
         return [image_head_to_head(f"t{i}", f"task {i}", 1.0, challenger) for i, challenger in enumerate(challengers)]
 
-    WON, SHORT, LEVEL, ONE_UP, WORSE = 0.9, 0.999, 1.0, 1.01, 1.5
+    WON, SHORT, LEVEL, ONE_UP, WORSE = 0.9, 0.995, 1.0, 1.01, 1.5
 
     @pytest.mark.parametrize(
         "name, challengers, crowned",
