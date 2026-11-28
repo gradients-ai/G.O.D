@@ -84,7 +84,8 @@ changes:
       rather than sign-ups. 1st place gets 85% of a tournament's share when a new boss takes the crown
       and in its first defence, then 1.5625 points less per defence down to 60% over time. The rest goes
       75/25 to 2nd and 3rd, so 2nd rises to 30% and 3rd to 10%. Entry fees drop to 0.6 TAO for text (from 0.7) and 0.5 TAO for compression (from
-      0.6). Image stays at 0.4 TAO.
+      0.6). Image stays at 0.4 TAO. Full details are in PR #1481
+      (https://github.com/gradients-ai/G.O.D/pull/1481).
     why: >-
       A long-held crown should leave more on the table for the miners closing in on it, while a new boss still gets
       a strong reward for taking it. A larger floating share lets emissions follow where competition is thin, and
