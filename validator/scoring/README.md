@@ -25,25 +25,21 @@ Each tournament's pool is its base share: a minimum plus a part of the share tha
 
 **How the floating share is computed** (`emission_balance.py`):
 
-1. For each of text, image and compression, take the participant counts of its last four completed tournaments, the latest included. Pending, active and cancelled tournaments are not counted. The boss's participant row is counted.
+1. For each of text, image and compression, take the contender counts of its last four completed tournaments, the latest included. A contender is a miner that completed at least one round-1 task: its training succeeded and its evaluation stored a finite test loss. Entering and failing does not count. The boss plays no round-1 task and is not counted. Pending, active and cancelled tournaments are not counted (`get_recent_completed_contender_counts` in `db/sql/tournaments.py`).
 2. Average the counts. A tournament with no usable history counts as average-subscribed.
-3. Give each tournament a part of the floating share proportional to `minimum_share x (minimum_share / participants) ^ alpha`.
+3. Give each tournament a part of the floating share proportional to `minimum_share x (minimum_share / contenders) ^ alpha`.
 
-A tournament with more participants than its minimum share implies cedes floating share to one with fewer. Each base lies between its minimum and its minimum plus the whole floating share, and the three bases sum to 1.0.
-
-**Compression phase-in.** Compression always gets its whole minimum. Its part of the floating share is scaled by a ramp that rises linearly from 0 at `QUANT_EMISSION_RAMP_START` to 1 after `QUANT_EMISSION_RAMP_DAYS`. The part not yet earned goes to text and image in proportion to their own parts of the floating share. Each base stays between its minimum and maximum, and the bases still sum to 1.0. With no start set, compression gets its minimum only. At a full ramp the split is the one above.
+A tournament with more contenders than its minimum share implies cedes floating share to one with fewer. Each base lies between its minimum and its minimum plus the whole floating share, and the three bases sum to 1.0.
 
 The pool of a tournament is exactly its base share. The three pools sum to 1.0, so the pools fill the whole emission pie and nothing is renormalised. Every place of a tournament, the champion's included, is paid from its one pool.
 
-Until the first compression tournament completes, its share follows the latest text tournament's placements (`get_latest_paying_tournament` in `weights.py`): the same hotkeys, the boss's places paid to text's defending champion, at compression's pool and place split, phase-in included.
+Until the first compression tournament completes, its share follows the latest text tournament's placements (`get_latest_paying_tournament` in `weights.py`): the same hotkeys, the boss's places paid to text's defending champion, at compression's pool and place split.
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
 | `EMISSION_BALANCE_ROLLING_WINDOW` | 4 | Completed tournaments averaged, the latest included. |
-| `EMISSION_MIN_ENTRANTS_FOR_BALANCE` | 3 | Tournaments with fewer participants are ignored. |
+| `EMISSION_MIN_ENTRANTS_FOR_BALANCE` | 3 | Tournaments with fewer contenders are ignored. |
 | `EMISSION_BALANCE_ALPHA` | 1.25 | Reaction strength. At 0 the floating share splits at the minimums' ratio. |
-| `QUANT_EMISSION_RAMP_START` | `None` | Timezone-aware UTC start of the compression phase-in. `None`: not started, compression gets its minimum only. |
-| `QUANT_EMISSION_RAMP_DAYS` | 28 | Days from the start until compression has its full part of the floating share. |
 
 **Undistributed weight goes to the burn node.** That covers:
 

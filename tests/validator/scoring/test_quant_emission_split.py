@@ -1,8 +1,5 @@
-"""Three-way emission split (text / quant / image) once compression's phase-in is complete: guaranteed minimums apply."""
+"""Three-way emission split (text / quant / image): guaranteed minimums plus a participation-driven flex pool."""
 
-from datetime import datetime
-from datetime import timedelta
-from datetime import timezone
 from itertools import product
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -16,13 +13,14 @@ from validator.endpoints.transfer_balances import get_tournament_fees
 from validator.scoring.emission_balance import compute_dynamic_base_weights
 from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.scoring.emission_balance import max_weight_by_type
+from validator.scoring.tournaments import first_place_share
+from validator.scoring.tournaments import place_share
 from validator.scoring.weights import apply_quant_tournament_weights
 from validator.scoring.weights import build_tournament_audit_data
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament import constants as t_cst
 from validator.tournament import cost_constants
-from validator.scoring.tournaments import exponential_decline_mapping
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
@@ -34,27 +32,25 @@ from validator.tournament.models import TournamentStatus
 TEXT = TournamentType.TEXT
 QUANT = TournamentType.QUANT
 IMAGE = TournamentType.IMAGE
-NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
-
-pytestmark = pytest.mark.usefixtures("quant_ramp_complete")
 
 ENTRANTS = [None, 3, 10, 25, 35, 100, 1000]
 BURN = "burn_hotkey"
+CROWN = first_place_share(0)
 
 
 def test_minimums_and_flex_constants():
-    assert cts.TOURNAMENT_TEXT_WEIGHT == 0.15
-    assert cts.TOURNAMENT_QUANT_WEIGHT == 0.35
-    assert cts.TOURNAMENT_IMAGE_WEIGHT == 0.25
-    assert cts.EMISSION_FLEX_POOL == pytest.approx(0.25)
-    assert cts.MAX_TEXT_TOURNAMENT_WEIGHT == pytest.approx(0.15 + 0.25)
-    assert cts.MAX_QUANT_TOURNAMENT_WEIGHT == pytest.approx(0.35 + 0.25)
-    assert cts.MAX_IMAGE_TOURNAMENT_WEIGHT == pytest.approx(0.25 + 0.25)
+    assert cts.TOURNAMENT_TEXT_WEIGHT == 0.25
+    assert cts.TOURNAMENT_QUANT_WEIGHT == 0.15
+    assert cts.TOURNAMENT_IMAGE_WEIGHT == 0.15
+    assert cts.EMISSION_FLEX_POOL == pytest.approx(0.45)
+    assert cts.MAX_TEXT_TOURNAMENT_WEIGHT == pytest.approx(0.25 + 0.45)
+    assert cts.MAX_QUANT_TOURNAMENT_WEIGHT == pytest.approx(0.15 + 0.45)
+    assert cts.MAX_IMAGE_TOURNAMENT_WEIGHT == pytest.approx(0.15 + 0.45)
 
 
 @pytest.mark.parametrize("text,quant,image", list(product(ENTRANTS, repeat=3)))
 def test_bases_sum_to_one_and_stay_within_minimum_plus_flex(text, quant, image):
-    weights = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image}, NOW)
+    weights = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image})
 
     assert sum(weights.values()) == pytest.approx(1.0, abs=1e-12)
     assert cts.TOURNAMENT_TEXT_WEIGHT <= weights[TEXT] <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
@@ -63,10 +59,10 @@ def test_bases_sum_to_one_and_stay_within_minimum_plus_flex(text, quant, image):
 
 
 def test_balanced_entrants_split_flex_at_the_minimums_ratio():
-    weights = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100}, NOW)
+    weights = compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
 
-    total_minimum = 0.15 + 0.35 + 0.25
-    for tournament_type, minimum in ((TEXT, 0.15), (QUANT, 0.35), (IMAGE, 0.25)):
+    total_minimum = 0.25 + 0.15 + 0.15
+    for tournament_type, minimum in ((TEXT, 0.25), (QUANT, 0.15), (IMAGE, 0.15)):
         assert weights[tournament_type] == pytest.approx(minimum + cts.EMISSION_FLEX_POOL * minimum / total_minimum)
 
 
@@ -80,7 +76,7 @@ def test_max_weight_by_type_returns_the_plain_caps():
 
 @pytest.mark.asyncio
 async def test_minimums_apply_after_the_phase_in_with_no_completed_quant_tournament():
-    with patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])):
+    with patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])):
         weights = await get_dynamic_base_weights(MagicMock())
 
     assert sum(weights.values()) == pytest.approx(1.0)
@@ -96,7 +92,7 @@ async def test_burn_details_without_a_quant_tournament_still_reserve_quants_base
 
     with (
         patch("validator.scoring.weights.get_latest_completed_tournament", latest),
-        patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])),
     ):
         burn = await get_tournament_burn_details(MagicMock())
 
@@ -115,7 +111,7 @@ async def test_audit_data_without_a_quant_tournament_keeps_quants_pool():
         patch("validator.scoring.weights.get_latest_completed_tournament", latest),
         patch("validator.scoring.weights.get_active_tournament_participants", AsyncMock(return_value=[])),
         patch("validator.scoring.weights.get_weekly_task_participation_data", AsyncMock(return_value=[])),
-        patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])),
     ):
         audit = await build_tournament_audit_data(MagicMock())
 
@@ -197,12 +193,12 @@ async def test_node_weights_pay_the_completed_quant_tournament_ranks():
 
 
 def test_participation_fees_by_type():
-    assert t_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO == 600_000_000
-    assert t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO == 700_000_000
+    assert t_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO == 500_000_000
+    assert t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO == 600_000_000
     assert t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO == 400_000_000
     by_type = cost_constants.TOURNAMENT_PARTICIPATION_FEE_RAO_BY_TYPE
-    assert by_type["quant"] == 600_000_000
-    assert by_type["text"] == 700_000_000
+    assert by_type["quant"] == 500_000_000
+    assert by_type["text"] == 600_000_000
     assert by_type["image"] == 400_000_000
 
 
@@ -210,8 +206,8 @@ def test_participation_fees_by_type():
 async def test_fee_endpoint_reports_the_quant_fee():
     response = await get_tournament_fees()
 
-    assert response.quant_tournament_fee_rao == 600_000_000
-    assert response.text_tournament_fee_rao == 700_000_000
+    assert response.quant_tournament_fee_rao == 500_000_000
+    assert response.text_tournament_fee_rao == 600_000_000
     assert response.image_tournament_fee_rao == 400_000_000
 
 
@@ -256,9 +252,10 @@ async def _audit_with(completed: list[TournamentData]) -> TournamentAuditData:
         patch("validator.scoring.weights.get_tournament_full_results", results),
         patch("validator.scoring.weights.get_tournament_participants", participants),
         patch("validator.scoring.weights.get_boss_rank_comparisons", AsyncMock(return_value=[])),
+        patch("validator.scoring.weights.count_champion_defences", AsyncMock(return_value=0)),
         patch("validator.scoring.weights.get_active_tournament_participants", AsyncMock(return_value=[])),
         patch("validator.scoring.weights.get_weekly_task_participation_data", AsyncMock(return_value=[])),
-        patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])),
     ):
         return await build_tournament_audit_data(MagicMock())
 
@@ -285,33 +282,12 @@ async def test_quant_pool_pays_text_placements_until_a_quant_tournament_complete
     weights = await _node_weights(audit, hotkeys)
 
     text_and_quant = audit.text_tournament_weight + audit.quant_tournament_weight
-    assert weights["champ"] == pytest.approx(exponential_decline_mapping(3, 1) * text_and_quant)
-    assert weights["t2"] == pytest.approx(exponential_decline_mapping(3, 2) * text_and_quant)
-    assert weights["t3"] == pytest.approx(exponential_decline_mapping(3, 3) * text_and_quant)
+    assert weights["champ"] == pytest.approx(place_share(3, 1, CROWN) * text_and_quant)
+    assert weights["t2"] == pytest.approx(place_share(3, 2, CROWN) * text_and_quant)
+    assert weights["t3"] == pytest.approx(place_share(3, 3, CROWN) * text_and_quant)
     assert weights["t4"] == 0.0
-    assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
-    assert weights["i2"] == pytest.approx(exponential_decline_mapping(2, 2) * audit.image_tournament_weight)
-    assert sum(weights.values()) == pytest.approx(1.0)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("ramp", [0.0, 0.5])
-async def test_text_placements_get_only_the_phased_quant_pool_before_a_quant_tournament_completes(ramp, monkeypatch):
-    full = await _audit_with([TEXT_DONE, IMAGE_DONE])
-    monkeypatch.setattr(cts, "QUANT_EMISSION_RAMP_START", NOW - ramp * timedelta(days=cts.QUANT_EMISSION_RAMP_DAYS))
-    with patch("validator.scoring.emission_balance.datetime") as clock:
-        clock.now.return_value = NOW
-        audit = await _audit_with([TEXT_DONE, IMAGE_DONE])
-
-    full_quant_flex = full.quant_tournament_weight - cts.TOURNAMENT_QUANT_WEIGHT
-    assert audit.quant_tournament_data.tournament_id == "text_1"
-    assert audit.quant_tournament_weight == pytest.approx(cts.TOURNAMENT_QUANT_WEIGHT + ramp * full_quant_flex)
-
-    weights = await _node_weights(audit, ["champ", "t2", "t3", "t4", "i1", "i2", BURN])
-
-    text_and_quant = audit.text_tournament_weight + audit.quant_tournament_weight
-    assert weights["champ"] == pytest.approx(exponential_decline_mapping(3, 1) * text_and_quant)
-    assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
+    assert weights["i1"] == pytest.approx(place_share(2, 1, CROWN) * audit.image_tournament_weight)
+    assert weights["i2"] == pytest.approx(place_share(2, 2, CROWN) * audit.image_tournament_weight)
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
@@ -326,9 +302,9 @@ async def test_quant_pool_pays_its_own_placements_once_a_quant_tournament_comple
     weights = await _node_weights(audit, hotkeys)
 
     for hotkey, position in (("champ", 1), ("t2", 2), ("t3", 3)):
-        assert weights[hotkey] == pytest.approx(exponential_decline_mapping(3, position) * audit.text_tournament_weight)
+        assert weights[hotkey] == pytest.approx(place_share(3, position, CROWN) * audit.text_tournament_weight)
     for hotkey, position in (("q1", 1), ("q2", 2), ("q3", 3)):
-        assert weights[hotkey] == pytest.approx(exponential_decline_mapping(3, position) * audit.quant_tournament_weight)
+        assert weights[hotkey] == pytest.approx(place_share(3, position, CROWN) * audit.quant_tournament_weight)
     assert sum(weights.values()) == pytest.approx(1.0)
 
 

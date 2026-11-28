@@ -1,9 +1,11 @@
 import validator.scoring.constants as cts
+from validator.db.sql.tournaments import count_champion_defences
 from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_participants
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
-from validator.scoring.tournaments import exponential_decline_mapping
+from validator.scoring.tournaments import first_place_share
+from validator.scoring.tournaments import place_share
 from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
@@ -94,8 +96,9 @@ async def calculate_tournament_projection(
     A challenger only becomes champion if they exceed the dethrone threshold;
     below it the boss defends and the challenger projects as the 2nd-place
     runner-up (a base-pool share, earning only until the next tournament's results
-    replace the standings). No time decay: a champion's weight is constant over
-    time, not a curve.
+    replace the standings). A new champion starts on the crown share and, assuming it
+    defends every weekly tournament, follows first_place_share down as its defences
+    add up; the projected weight is the one in force at the end of each horizon.
     """
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
 
@@ -107,10 +110,12 @@ async def calculate_tournament_projection(
 
     # Tournament-internal share by rank and the participation scale factor.
     num_participants = 0
+    current_defences = 0
     if latest_tournament:
         participants = await get_tournament_participants(latest_tournament.tournament_id, psql_db)
         num_participants = len(participants)
-    winner_share = exponential_decline_mapping(max(num_participants, 1), 1)
+        current_defences = await count_champion_defences(psql_db, latest_tournament.tournament_id)
+    paid_ranks = min(max(num_participants, 1), cts.TOURNAMENT_PAID_RANKS)
 
     active_participants = await get_active_tournament_participants(psql_db)
     participation_total = len(active_participants) * cts.TOURNAMENT_PARTICIPATION_WEIGHT
@@ -119,15 +124,17 @@ async def calculate_tournament_projection(
     projection_days = [7, 30, 90, 180]
 
     if dethrones:
-        # Winner's actual emission weight = winner_share * base pool * scale_factor.
-        # No decay: this weight is constant, so alpha accrues linearly over time.
-        initial_weight = winner_share * base_weight * scale_factor
+        # The crown tournament is defence 0; each weekly tournament defended after it is one more.
+        def champion_weight(day: int) -> float:
+            return place_share(paid_ranks, 1, first_place_share(day // 7)) * base_weight * scale_factor
+
+        initial_weight = champion_weight(0)
 
         projections = [
             WeightProjection(
                 days=days,
-                weight=initial_weight,
-                total_alpha=days * cts.DAILY_ALPHA_TO_MINERS * initial_weight,
+                weight=champion_weight(days - 1),
+                total_alpha=sum(cts.DAILY_ALPHA_TO_MINERS * champion_weight(day) for day in range(days)),
             )
             for days in projection_days
         ]
@@ -137,7 +144,8 @@ async def calculate_tournament_projection(
         # Below the dethrone threshold the boss defends; the challenger places 2nd
         # and earns the runner-up share of the base pool only
         # until the next tournament's results replace the standings.
-        runner_up_share = exponential_decline_mapping(max(num_participants, 1), 2)
+        # The boss defends once more, so 1st takes the share of its next defence.
+        runner_up_share = place_share(paid_ranks, 2, first_place_share(current_defences + 1))
         runner_up_weight = runner_up_share * base_weight * scale_factor
         initial_weight = runner_up_weight
 

@@ -430,6 +430,7 @@ async def get_tournament_details(
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
             # The same stored comparisons the weight setter reads, so a redirected share shows as it is set.
             boss_rank_comparisons=await stored_boss_rank_comparisons(tournament.tournament_id, config.psql_db),
+            champion_defences=await tournament_sql.count_champion_defences(config.psql_db, tournament.tournament_id),
         )
         # Environment tournaments are retired from weight setting, so the dynamic split no longer
         # carries an environment base. Historical environment tournaments are still scored for

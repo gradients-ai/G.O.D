@@ -52,9 +52,9 @@ Three tournaments run every week. Times are UTC. `quant` is the API value of the
 
 | Tournament | Endpoint on your miner | Weekly start | Entry fee | Guide |
 | --- | --- | --- | --- | --- |
-| Text | `GET /training_repo/text` | Monday 08:00 | `0.7 TAO` | [Text guide](miner_text.md) |
+| Text | `GET /training_repo/text` | Monday 08:00 | `0.6 TAO` | [Text guide](miner_text.md) |
 | Image | `GET /training_repo/image` | Monday 12:00 | `0.4 TAO` | [Image guide](miner_image.md) |
-| Compression | `GET /training_repo/quant` | Monday 10:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
+| Compression | `GET /training_repo/quant` | Monday 10:00 | `0.5 TAO` | [Compression guide](miner_compression.md) |
 
 Each tournament is entered on its endpoint and charges one fee per entry. Entering two tournaments is two entries and two fees.
 
@@ -365,22 +365,29 @@ Shares are fractions of the subnet's miner emission.
 
 | Tournament | Base minimum | Maximum |
 | --- | --- | --- |
-| Text | 0.15 | 0.40 |
-| Image | 0.25 | 0.50 |
-| Compression | 0.35 | 0.60 |
+| Text | 0.25 | 0.70 |
+| Image | 0.15 | 0.60 |
+| Compression | 0.15 | 0.60 |
 
-The minimums sum to 0.75. The other 0.25 floats between the tournaments by participation. A maximum is the minimum plus the whole 0.25. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
+The minimums sum to 0.55. The other 0.45 floats between the tournaments by participation: a tournament with fewer contenders than its minimum implies gets more of it. A maximum is the minimum plus the whole 0.45.
 
-Compression always gets its 0.35 minimum. Its part of the floating 0.25 phases in linearly over 28 days from a start date set in the validator. Before the start it gets none of the floating share. During the phase-in its part is scaled by the fraction of the 28 days that has passed, and the rest goes to text and image in proportion to their own parts. Once the 28 days have passed the split is as described above. Details: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
+Participation counts contenders, not sign-ups. A contender is a miner that completed at least one round-1 task: its training succeeded and its model was evaluated. Entering a tournament and failing does not count toward its share. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 
 ### Split over the paid places
 
-| Paid places | 1st | 2nd | 3rd |
-| --- | --- | --- | --- |
-| Three | 76.2% | 19.0% | 4.8% |
-| Two | 80% | 20% | |
+1st place's share depends on how long the champion has held the crown. It is 85% in the tournament where a new boss takes the crown and in its first defence. From the second defence it falls by 2.1875 points per defence and reaches 50% at the 17th defence, where it stays until the boss is dethroned. The rest goes to 2nd and 3rd at three quarters and one quarter.
 
-Each paid place gets a quarter of the one above. Two places are paid when the tournament has no third-place miner.
+| Champion's defences | 1st | 2nd | 3rd |
+| --- | --- | --- | --- |
+| 0 (crown) or 1 | 85% | 11.25% | 3.75% |
+| 5 | 76.25% | 17.81% | 5.94% |
+| 9 | 67.5% | 24.38% | 8.13% |
+| 13 | 58.75% | 30.94% | 10.31% |
+| 17 or more | 50% | 37.5% | 12.5% |
+
+Two places are paid when the tournament has no third-place miner: 2nd then gets the whole rest. A tournament with one paid place pays it the whole share.
+
+Source: [`first_place_share` and `place_share`](../validator/scoring/tournaments.py), [`count_champion_defences`](../validator/db/sql/tournaments.py).
 
 ### Other rules
 

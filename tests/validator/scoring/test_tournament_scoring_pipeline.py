@@ -15,11 +15,12 @@ from core.models.pvp_models import PvPPairResult
 from validator.scoring.tournaments import accumulate_points
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.scoring.tournaments import compute_pvp_tournament_points
-from validator.scoring.tournaments import exponential_decline_mapping
+from validator.scoring.tournaments import first_place_share
 from validator.scoring.tournaments import get_boss_round_pair_weights
 from validator.scoring.tournaments import get_quant_tournament_weights_from_data
 from validator.scoring.tournaments import get_tournament_weights_from_data
 from validator.scoring.tournaments import individual_scores_to_pairwise
+from validator.scoring.tournaments import place_share
 from validator.scoring.tournaments import pvp_results_to_pairwise
 from validator.scoring.tournaments import tournament_scores_to_weights
 from validator.scoring.weights import apply_tournament_weights
@@ -307,35 +308,54 @@ class TestIndividualAccumulateCompatibility:
         assert standings[1].hotkey == CAROL
 
 
-# --- 1g: exponential_decline_mapping ---
+# --- 1g: first_place_share / place_share ---
 
 
-class TestExponentialDeclineMapping:
-    def test_rank_one_is_highest(self):
-        w1 = exponential_decline_mapping(5, 1)
-        w2 = exponential_decline_mapping(5, 2)
-        assert w1 > w2
+class TestFirstPlaceShare:
+    def test_crown_and_first_defence_pay_the_start_share(self):
+        assert first_place_share(0) == pytest.approx(0.85)
+        assert first_place_share(1) == pytest.approx(0.85)
 
-    def test_non_increasing_by_rank(self):
-        weights = [exponential_decline_mapping(5, r) for r in range(1, 6)]
-        for i in range(len(weights) - 1):
-            assert weights[i] >= weights[i + 1]
+    def test_declines_linearly_from_the_second_defence(self):
+        assert first_place_share(2) == pytest.approx(0.85 - 0.35 / 16)
+        assert first_place_share(9) == pytest.approx(0.675)
 
-    def test_only_top_three_ranks_paid(self):
-        assert exponential_decline_mapping(5, 1) == pytest.approx(16 / 21)
-        assert exponential_decline_mapping(5, 2) == pytest.approx(4 / 21)
-        assert exponential_decline_mapping(5, 3) == pytest.approx(1 / 21)
-        assert exponential_decline_mapping(5, 4) == 0.0
-        assert exponential_decline_mapping(5, 5) == 0.0
+    def test_reaches_the_floor_at_the_seventeenth_defence_and_stays(self):
+        assert first_place_share(16) > 0.50
+        assert first_place_share(17) == pytest.approx(0.50)
+        assert first_place_share(40) == pytest.approx(0.50)
 
-    def test_single_participant(self):
-        assert exponential_decline_mapping(1, 1) == 1.0
 
-    def test_weights_sum_to_one(self):
-        """Paid ranks' weights should sum to approximately 1.0."""
-        n = 10
-        total = sum(exponential_decline_mapping(n, r) for r in range(1, n + 1))
-        assert abs(total - 1.0) < 1e-9
+class TestPlaceShare:
+    @pytest.mark.parametrize("defences", [0, 1, 5, 17, 30])
+    def test_three_paid_places_split_the_rest_three_to_one(self, defences):
+        first = first_place_share(defences)
+        assert place_share(3, 1, first) == pytest.approx(first)
+        assert place_share(3, 2, first) == pytest.approx(0.75 * (1 - first))
+        assert place_share(3, 3, first) == pytest.approx(0.25 * (1 - first))
+        assert sum(place_share(3, position, first) for position in (1, 2, 3)) == pytest.approx(1.0)
+
+    def test_crown_split(self):
+        first = first_place_share(0)
+        assert [place_share(3, position, first) for position in (1, 2, 3)] == pytest.approx([0.85, 0.1125, 0.0375])
+
+    def test_floor_split(self):
+        first = first_place_share(17)
+        assert [place_share(3, position, first) for position in (1, 2, 3)] == pytest.approx([0.50, 0.375, 0.125])
+
+    def test_two_paid_places_pay_the_whole_pool(self):
+        first = first_place_share(5)
+        assert place_share(2, 1, first) == pytest.approx(first)
+        assert place_share(2, 2, first) == pytest.approx(1 - first)
+
+    def test_single_paid_place_takes_the_pool(self):
+        assert place_share(1, 1, first_place_share(10)) == 1.0
+
+    def test_positions_outside_the_paid_places_get_nothing(self):
+        first = first_place_share(0)
+        assert place_share(3, 4, first) == 0.0
+        assert place_share(2, 3, first) == 0.0
+        assert place_share(3, 0, first) == 0.0
 
 
 # --- 1h: tournament_scores_to_weights ---
@@ -770,7 +790,7 @@ class TestGetBossRoundPairWeights:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+        assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
 
     def test_challenger_dethrones_boss(self):
         data = self._tournament(
@@ -781,7 +801,7 @@ class TestGetBossRoundPairWeights:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {CHALLENGER: pytest.approx(0.8), BOSS: pytest.approx(0.2)}
+        assert weights == {CHALLENGER: pytest.approx(0.85), BOSS: pytest.approx(0.15)}
 
     def test_semifinalist_earns_nothing_even_when_tied_on_points(self):
         earlier = [
@@ -811,7 +831,7 @@ class TestGetBossRoundPairWeights:
         weights = get_boss_round_pair_weights(data)
 
         assert DAVE not in weights
-        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+        assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
 
     def test_no_final_round_pays_champion_alone(self):
         data = TournamentResultsWithWinners(
@@ -839,7 +859,7 @@ class TestGetBossRoundPairWeights:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {cts.EMISSION_BURN_HOTKEY: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+        assert weights == {cts.EMISSION_BURN_HOTKEY: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
 
 
 class TestGetBossRoundPairWeightsThirdPlace:
@@ -863,9 +883,9 @@ class TestGetBossRoundPairWeightsThirdPlace:
         weights = get_boss_round_pair_weights(data)
 
         assert weights == {
-            BOSS: pytest.approx(16 / 21),
-            CHALLENGER: pytest.approx(4 / 21),
-            DAVE: pytest.approx(1 / 21),
+            BOSS: pytest.approx(0.85),
+            CHALLENGER: pytest.approx(0.1125),
+            DAVE: pytest.approx(0.0375),
         }
         assert sum(weights.values()) == pytest.approx(1.0)
 
@@ -884,8 +904,8 @@ class TestGetBossRoundPairWeightsThirdPlace:
         weights = get_boss_round_pair_weights(data)
 
         assert weights == {
-            CHALLENGER: pytest.approx(16 / 21 + 4 / 21),
-            DAVE: pytest.approx(1 / 21),
+            CHALLENGER: pytest.approx(0.85 + 0.1125),
+            DAVE: pytest.approx(0.0375),
         }
         assert sum(weights.values()) == pytest.approx(1.0)
 
@@ -907,7 +927,7 @@ class TestGetBossRoundPairWeightsThirdPlace:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+        assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
 
     def test_third_place_burn_placeholder_resolves_to_base_winner(self):
         data = self._tournament_with_positions(
@@ -918,8 +938,8 @@ class TestGetBossRoundPairWeightsThirdPlace:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights[BOSS] == pytest.approx(16 / 21)
-        assert weights[DAVE] == pytest.approx(1 / 21)
+        assert weights[BOSS] == pytest.approx(0.85)
+        assert weights[DAVE] == pytest.approx(0.0375)
         assert cts.EMISSION_BURN_HOTKEY not in weights
 
     def test_no_positions_fallback_still_capped_at_two_ranks(self):
@@ -935,8 +955,8 @@ class TestGetBossRoundPairWeightsThirdPlace:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights[BOSS] == pytest.approx(0.8)
-        assert weights[CHALLENGER] == pytest.approx(0.2)
+        assert weights[BOSS] == pytest.approx(0.85)
+        assert weights[CHALLENGER] == pytest.approx(0.15)
         assert weights[DAVE] == 0.0
 
 
@@ -980,7 +1000,7 @@ class TestBossRoundEmissionsProductionPath:
                 TournamentType.IMAGE: image_w,
             }[tournament_type]
 
-            assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+            assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
             assert DAVE not in weights
             assert "5GEli" not in weights
 
@@ -990,7 +1010,7 @@ class TestBossRoundEmissionsProductionPath:
         champion_key = max(weights, key=lambda hotkey: weights[hotkey])
 
         assert champion_key == get_real_tournament_winner(data) == BOSS
-        assert weights[champion_key] == pytest.approx(0.8)
+        assert weights[champion_key] == pytest.approx(0.85)
 
     def test_champion_key_matches_get_real_tournament_winner_when_dethroned(self):
         data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], CHALLENGER, BOSS)
@@ -998,7 +1018,7 @@ class TestBossRoundEmissionsProductionPath:
         champion_key = max(weights, key=lambda hotkey: weights[hotkey])
 
         assert champion_key == get_real_tournament_winner(data) == CHALLENGER
-        assert weights[champion_key] == pytest.approx(0.8)
+        assert weights[champion_key] == pytest.approx(0.85)
 
     def test_apply_tournament_weights_pays_every_place_from_the_one_pool(self):
         data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], cts.EMISSION_BURN_HOTKEY, BOSS)
@@ -1017,8 +1037,8 @@ class TestBossRoundEmissionsProductionPath:
             0.0,
         )
 
-        assert all_node_weights[0] == pytest.approx(0.8 * scaled_text_tournament_weight)
-        assert all_node_weights[1] == pytest.approx(0.2 * scaled_text_tournament_weight)
+        assert all_node_weights[0] == pytest.approx(0.85 * scaled_text_tournament_weight)
+        assert all_node_weights[1] == pytest.approx(0.15 * scaled_text_tournament_weight)
         assert all_node_weights[2] == 0.0
         assert undistributed == pytest.approx(0.0)
 
@@ -1052,9 +1072,9 @@ class TestQuantPlacementOverride:
         assert _SKIP_BOSS_OLD_TEXT_BOSS not in weights
         assert cts.EMISSION_BURN_HOTKEY not in weights
         assert weights == {
-            _SKIP_BOSS_WINNER: pytest.approx(exponential_decline_mapping(3, 1)),
-            _SKIP_BOSS_RUNNER_UP: pytest.approx(exponential_decline_mapping(3, 2)),
-            _SKIP_BOSS_THIRD: pytest.approx(exponential_decline_mapping(3, 3)),
+            _SKIP_BOSS_WINNER: pytest.approx(place_share(3, 1, first_place_share(0))),
+            _SKIP_BOSS_RUNNER_UP: pytest.approx(place_share(3, 2, first_place_share(0))),
+            _SKIP_BOSS_THIRD: pytest.approx(place_share(3, 3, first_place_share(0))),
         }
 
     def test_named_tournament_with_another_winner_keeps_stored_places(self):
@@ -1066,6 +1086,6 @@ class TestQuantPlacementOverride:
     def test_any_other_tournament_still_pays_the_boss_second(self):
         weights = get_quant_tournament_weights_from_data(self._placed("tourn_other"))
 
-        assert weights[_SKIP_BOSS_OLD_TEXT_BOSS] == pytest.approx(exponential_decline_mapping(3, 2))
-        assert weights[_SKIP_BOSS_WINNER] == pytest.approx(exponential_decline_mapping(3, 1))
-        assert weights[_SKIP_BOSS_RUNNER_UP] == pytest.approx(exponential_decline_mapping(3, 3))
+        assert weights[_SKIP_BOSS_OLD_TEXT_BOSS] == pytest.approx(place_share(3, 2, first_place_share(0)))
+        assert weights[_SKIP_BOSS_WINNER] == pytest.approx(place_share(3, 1, first_place_share(0)))
+        assert weights[_SKIP_BOSS_RUNNER_UP] == pytest.approx(place_share(3, 3, first_place_share(0)))

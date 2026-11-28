@@ -1,5 +1,3 @@
-from datetime import datetime
-from datetime import timezone
 
 import pytest
 
@@ -11,9 +9,6 @@ from validator.scoring.emission_balance import compute_dynamic_base_weights
 TEXT = TournamentType.TEXT
 QUANT = TournamentType.QUANT
 IMAGE = TournamentType.IMAGE
-NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
-
-pytestmark = pytest.mark.usefixtures("quant_ramp_complete")
 
 ENTRANT_SCENARIOS = [
     (13, 21.75),
@@ -31,7 +26,7 @@ ENTRANT_SCENARIOS = [
 
 @pytest.mark.parametrize("text_entrants,image_entrants", ENTRANT_SCENARIOS)
 def test_bases_stay_within_minimum_and_minimum_plus_flex(text_entrants, image_entrants):
-    weights = compute_dynamic_base_weights({TEXT: text_entrants, QUANT: 15, IMAGE: image_entrants}, NOW)
+    weights = compute_dynamic_base_weights({TEXT: text_entrants, QUANT: 15, IMAGE: image_entrants})
 
     assert weights[TEXT] + weights[QUANT] + weights[IMAGE] == pytest.approx(1.0)
     assert cts.TOURNAMENT_TEXT_WEIGHT <= weights[TEXT] <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
@@ -40,24 +35,24 @@ def test_bases_stay_within_minimum_and_minimum_plus_flex(text_entrants, image_en
 
 
 def test_balanced_participation_splits_flex_at_minimums_ratio():
-    # 60:140:100 entrants matches the minimums' ratio (0.15:0.35:0.25), so flex splits 60/300, 140/300, 100/300 of 0.25.
-    weights = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100}, NOW)
+    # 100:60:60 contenders matches the minimums' ratio (0.25:0.15:0.15), so flex splits 100/220, 60/220, 60/220 of 0.45.
+    weights = compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
 
     flex = cts.EMISSION_FLEX_POOL
-    assert weights[TEXT] == pytest.approx(0.15 + flex * 60 / 300)
-    assert weights[QUANT] == pytest.approx(0.35 + flex * 140 / 300)
-    assert weights[IMAGE] == pytest.approx(0.25 + flex * 100 / 300)
+    assert weights[TEXT] == pytest.approx(0.25 + flex * 100 / 220)
+    assert weights[QUANT] == pytest.approx(0.15 + flex * 60 / 220)
+    assert weights[IMAGE] == pytest.approx(0.15 + flex * 60 / 220)
 
 
 def test_no_history_falls_back_to_balanced_split():
-    assert compute_dynamic_base_weights({TEXT: None, QUANT: None, IMAGE: None}, NOW) == pytest.approx(
-        compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100}, NOW)
+    assert compute_dynamic_base_weights({TEXT: None, QUANT: None, IMAGE: None}) == pytest.approx(
+        compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
     )
 
 
 def test_starved_type_gains_flex():
-    balanced = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100}, NOW)
-    starved_text = compute_dynamic_base_weights({TEXT: 5, QUANT: 35, IMAGE: 25}, NOW)
-    crowded_text = compute_dynamic_base_weights({TEXT: 90, QUANT: 35, IMAGE: 25}, NOW)
+    balanced = compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
+    starved_text = compute_dynamic_base_weights({TEXT: 5, QUANT: 35, IMAGE: 25})
+    crowded_text = compute_dynamic_base_weights({TEXT: 90, QUANT: 35, IMAGE: 25})
 
     assert starved_text[TEXT] > balanced[TEXT] > crowded_text[TEXT]
