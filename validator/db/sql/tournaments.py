@@ -1162,42 +1162,39 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
         ]
 
 
-async def get_recent_completed_contender_counts(
-    psql_db: PSQLDB,
-    tournament_type: TournamentType,
-    limit: int = 4,
-    min_contenders: int = 3,
-) -> list[int]:
-    """Contender counts of the last ``limit`` completed tournaments of this type, newest first (emission auto-balancer).
+async def get_recent_completed_tournament_ids(psql_db: PSQLDB, tournament_type: TournamentType, limit: int) -> list[str]:
+    """Ids of the last ``limit`` completed tournaments of this type, newest first (emission auto-balancer).
 
-    A contender is a hotkey that completed at least one round-1 task: its training succeeded and its evaluation stored a
-    finite test loss. Signing up and failing does not count, so a miner cannot enter a tournament it never means to
-    play to pull flex toward another type. The boss plays no round-1 task and is not counted.
-
-    Only completed tournaments count; pending, active and cancelled ones are left out by status. Tournaments below
-    ``min_contenders`` are skipped so a reseeded or near-empty tournament can't distort the split.
-    """
+    Pending, active and cancelled tournaments are left out by status."""
     async with await psql_db.connection() as connection:
         query = f"""
-            SELECT COUNT(DISTINCT n.{cst.HOTKEY}) AS n
-            FROM {cst.TOURNAMENTS_TABLE} t
-            LEFT JOIN {cst.TOURNAMENT_ROUNDS_TABLE} r
-              ON r.{cst.TOURNAMENT_ID} = t.{cst.TOURNAMENT_ID} AND r.{cst.ROUND_NUMBER} = 1
-            LEFT JOIN {cst.TOURNAMENT_TASKS_TABLE} tt ON tt.{cst.ROUND_ID} = r.{cst.ROUND_ID}
-            LEFT JOIN {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} h
-              ON h.{cst.TASK_ID} = tt.{cst.TASK_ID} AND h.{cst.TRAINING_STATUS} = '{TrainingStatus.SUCCESS.value}'
-            LEFT JOIN {cst.TASK_NODES_TABLE} n
-              ON n.{cst.TASK_ID} = h.{cst.TASK_ID} AND n.{cst.HOTKEY} = h.{cst.HOTKEY}
-             AND n.{cst.TEST_LOSS} IS NOT NULL
-             AND n.{cst.TEST_LOSS} NOT IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8)
-            WHERE t.{cst.TOURNAMENT_TYPE} = $1 AND t.{cst.TOURNAMENT_STATUS} = 'completed'
-            GROUP BY t.{cst.TOURNAMENT_ID}, t.{cst.CREATED_AT}
-            HAVING COUNT(DISTINCT n.{cst.HOTKEY}) >= $2
-            ORDER BY t.{cst.CREATED_AT} DESC
-            LIMIT $3
+            SELECT {cst.TOURNAMENT_ID}
+            FROM {cst.TOURNAMENTS_TABLE}
+            WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} = 'completed'
+            ORDER BY {cst.CREATED_AT} DESC
+            LIMIT $2
         """
-        results = await connection.fetch(query, tournament_type.value, min_contenders, limit)
-        return [row["n"] for row in results]
+        results = await connection.fetch(query, tournament_type.value, limit)
+        return [row[cst.TOURNAMENT_ID] for row in results]
+
+
+async def count_round_one_completers(psql_db: PSQLDB, tournament_id: str) -> int:
+    """Hotkeys that completed at least one round-1 task of the tournament: training succeeded and the evaluation stored a
+    finite test loss. The emission balancer's fallback when the round-1 ranking against the boss cannot be computed."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT COUNT(DISTINCT n.{cst.HOTKEY})
+            FROM {cst.TOURNAMENT_ROUNDS_TABLE} r
+            JOIN {cst.TOURNAMENT_TASKS_TABLE} tt ON tt.{cst.ROUND_ID} = r.{cst.ROUND_ID}
+            JOIN {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} h
+              ON h.{cst.TASK_ID} = tt.{cst.TASK_ID} AND h.{cst.TRAINING_STATUS} = '{TrainingStatus.SUCCESS.value}'
+            JOIN {cst.TASK_NODES_TABLE} n
+              ON n.{cst.TASK_ID} = h.{cst.TASK_ID} AND n.{cst.HOTKEY} = h.{cst.HOTKEY}
+            WHERE r.{cst.TOURNAMENT_ID} = $1 AND r.{cst.ROUND_NUMBER} = 1
+              AND n.{cst.TEST_LOSS} IS NOT NULL
+              AND n.{cst.TEST_LOSS} NOT IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8)
+        """
+        return await connection.fetchval(query, tournament_id)
 
 
 async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: PSQLDB):

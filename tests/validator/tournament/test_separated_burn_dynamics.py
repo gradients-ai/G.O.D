@@ -227,7 +227,7 @@ class TestSeparatedBurnDynamics:
     @pytest.mark.asyncio
     async def test_no_champions_falls_back_to_the_anchor_split(self, mock_psql_db):
         """With no tournament history anywhere, the pools still sum to exactly 1.0 and hold the anchor ratios."""
-        with patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])):
+        with patch("validator.scoring.emission_balance.get_recent_contender_counts", AsyncMock(return_value=[])):
             result = await get_tournament_burn_details(mock_psql_db)
 
         total = result.text_tournament_weight + result.quant_tournament_weight + result.image_tournament_weight

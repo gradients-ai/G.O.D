@@ -371,7 +371,7 @@ Shares are fractions of the subnet's miner emission.
 
 The minimums sum to 0.55. The other 0.45 floats between the tournaments by participation: a tournament with fewer contenders than its minimum implies gets more of it. A maximum is the minimum plus the whole 0.45.
 
-Participation counts contenders, not sign-ups. A contender is a miner that completed at least one round-1 task: its training succeeded and its model was evaluated. Entering a tournament and failing does not count toward its share. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
+Participation counts contenders, not sign-ups. A contender is a miner that ranked strictly above the boss in round 1. Entering a tournament and failing, or resubmitting the boss's code, does not count toward its share. A tie with the boss does not count. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 
 ### Split over the paid places
 

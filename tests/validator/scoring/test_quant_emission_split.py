@@ -76,7 +76,7 @@ def test_max_weight_by_type_returns_the_plain_caps():
 
 @pytest.mark.asyncio
 async def test_minimums_apply_after_the_phase_in_with_no_completed_quant_tournament():
-    with patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])):
+    with patch("validator.scoring.emission_balance.get_recent_contender_counts", AsyncMock(return_value=[])):
         weights = await get_dynamic_base_weights(MagicMock())
 
     assert sum(weights.values()) == pytest.approx(1.0)
@@ -92,7 +92,7 @@ async def test_burn_details_without_a_quant_tournament_still_reserve_quants_base
 
     with (
         patch("validator.scoring.weights.get_latest_completed_tournament", latest),
-        patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_contender_counts", AsyncMock(return_value=[])),
     ):
         burn = await get_tournament_burn_details(MagicMock())
 
@@ -111,7 +111,7 @@ async def test_audit_data_without_a_quant_tournament_keeps_quants_pool():
         patch("validator.scoring.weights.get_latest_completed_tournament", latest),
         patch("validator.scoring.weights.get_active_tournament_participants", AsyncMock(return_value=[])),
         patch("validator.scoring.weights.get_weekly_task_participation_data", AsyncMock(return_value=[])),
-        patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_contender_counts", AsyncMock(return_value=[])),
     ):
         audit = await build_tournament_audit_data(MagicMock())
 
@@ -255,7 +255,7 @@ async def _audit_with(completed: list[TournamentData]) -> TournamentAuditData:
         patch("validator.scoring.weights.count_champion_defences", AsyncMock(return_value=0)),
         patch("validator.scoring.weights.get_active_tournament_participants", AsyncMock(return_value=[])),
         patch("validator.scoring.weights.get_weekly_task_participation_data", AsyncMock(return_value=[])),
-        patch("validator.scoring.emission_balance.get_recent_completed_contender_counts", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_contender_counts", AsyncMock(return_value=[])),
     ):
         return await build_tournament_audit_data(MagicMock())
 

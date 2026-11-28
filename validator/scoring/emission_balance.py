@@ -14,9 +14,10 @@ the minimums' ratio, larger values react harder to a given imbalance.
     flex_shareᵢ ∝ minimum_shareᵢ · (minimum_shareᵢ / entrant_shareᵢ) ** alpha
     wᵢ = minimumᵢ + EMISSION_FLEX_POOL · flex_shareᵢ
 
-Counts are contenders, not sign-ups: a hotkey counts only if it completed at least one round-1 task
-(training succeeded and it was evaluated), so entering a tournament and failing on purpose cannot pull
-flex toward another type.
+Counts are contenders, not sign-ups: a challenger counts only if it ranked strictly above the boss in
+round 1 (round_results.count_round_one_above_boss). Entering a tournament and failing on purpose, or
+resubmitting the boss's code, cannot pull flex toward another type. When the round-1 ranking cannot be
+computed the tournament falls back to the hotkeys that completed a round-1 task.
 """
 
 from statistics import mean
@@ -24,10 +25,15 @@ from statistics import mean
 import validator.scoring.constants as cts
 from core.logging import get_logger
 from core.models.tournament_models import TournamentType
-from validator.db.sql.tournaments import get_recent_completed_contender_counts
+from validator.db.sql.tournaments import count_round_one_completers
+from validator.db.sql.tournaments import get_recent_completed_tournament_ids
+from validator.tournament.round_results import count_round_one_above_boss
 
 
 logger = get_logger(__name__)
+
+# Round-1 results of a completed tournament no longer change, so its contender count is computed once per process.
+_CONTENDERS_BY_TOURNAMENT: dict[str, int] = {}
 
 _TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.QUANT, TournamentType.IMAGE)
 
@@ -77,16 +83,47 @@ def max_weight_by_type() -> dict[TournamentType, float]:
     }
 
 
+async def tournament_contenders(psql_db, tournament_id: str) -> int:
+    """Contenders of one completed tournament: challengers ranked strictly above the boss in round 1.
+
+    Falls back, uncached, to the round-1 completers when the ranking cannot be computed."""
+    if tournament_id in _CONTENDERS_BY_TOURNAMENT:
+        return _CONTENDERS_BY_TOURNAMENT[tournament_id]
+    try:
+        above_boss = await count_round_one_above_boss(tournament_id, psql_db)
+    except Exception as e:
+        logger.warning(f"Tournament {tournament_id}: round-1 ranks against the boss unavailable ({type(e).__name__}: {e})")
+        above_boss = None
+    if above_boss is None:
+        completers = await count_round_one_completers(psql_db, tournament_id)
+        logger.info(f"Tournament {tournament_id}: {completers} round-1 completers counted as contenders")
+        return completers
+    _CONTENDERS_BY_TOURNAMENT[tournament_id] = above_boss
+    return above_boss
+
+
+async def get_recent_contender_counts(psql_db, tournament_type: TournamentType) -> list[int]:
+    """Contender counts of the last EMISSION_BALANCE_ROLLING_WINDOW completed tournaments of this type with at least
+    EMISSION_MIN_ENTRANTS_FOR_BALANCE contenders, newest first. Tournaments below the minimum are skipped, so a reseeded
+    or near-empty tournament can't distort the split, and older ones fill the window."""
+    counts: list[int] = []
+    tournament_ids = await get_recent_completed_tournament_ids(
+        psql_db, tournament_type, limit=cts.EMISSION_CONTENDER_SCAN_LIMIT
+    )
+    for tournament_id in tournament_ids:
+        contenders = await tournament_contenders(psql_db, tournament_id)
+        if contenders >= cts.EMISSION_MIN_ENTRANTS_FOR_BALANCE:
+            counts.append(contenders)
+        if len(counts) == cts.EMISSION_BALANCE_ROLLING_WINDOW:
+            break
+    return counts
+
+
 async def get_dynamic_base_weights(psql_db) -> dict[TournamentType, float]:
     """Fetch rolling contender counts per type and compute the dynamic base split."""
     counts: dict[TournamentType, float | None] = {}
     for tournament_type in _TYPES:
-        recent = await get_recent_completed_contender_counts(
-            psql_db,
-            tournament_type,
-            limit=cts.EMISSION_BALANCE_ROLLING_WINDOW,
-            min_contenders=cts.EMISSION_MIN_ENTRANTS_FOR_BALANCE,
-        )
+        recent = await get_recent_contender_counts(psql_db, tournament_type)
         counts[tournament_type] = mean(recent) if recent else None
 
     weights = compute_dynamic_base_weights(counts)

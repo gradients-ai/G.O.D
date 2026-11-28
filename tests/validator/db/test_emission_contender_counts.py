@@ -1,6 +1,7 @@
-"""The emission balancer's contender history and the champion's defence count, on a throwaway local Postgres.
+"""The emission balancer's tournament history, its round-1 completer fallback and the champion's defence count.
 
-Runs the real SQL of get_recent_completed_contender_counts and count_champion_defences.
+Runs the real SQL of get_recent_completed_tournament_ids, count_round_one_completers and count_champion_defences on a
+throwaway local Postgres.
 """
 
 import random
@@ -18,7 +19,8 @@ import pytest
 import validator.scoring.constants as scoring_cst
 from core.models.tournament_models import TournamentType
 from validator.db.sql.tournaments import count_champion_defences
-from validator.db.sql.tournaments import get_recent_completed_contender_counts
+from validator.db.sql.tournaments import count_round_one_completers
+from validator.db.sql.tournaments import get_recent_completed_tournament_ids
 
 
 class _Cluster:
@@ -114,13 +116,6 @@ async def _round(connection: asyncpg.Connection, tournament_id: str, round_numbe
                 await connection.execute("INSERT INTO task_nodes VALUES ($1, $2, $3)", task_id, hotkey, loss)
 
 
-async def _completed_with(connection, tournament_id: str, day: int, contenders: int, tournament_type: str = "text"):
-    """A completed tournament whose round 1 has ``contenders`` hotkeys that trained and were evaluated."""
-    await _tournament(connection, tournament_id, day, tournament_type=tournament_type)
-    rows = [(f"hk{i}", "success", 1.0) for i in range(contenders)]
-    await _round(connection, tournament_id, 1, {f"{tournament_id}_task": rows})
-
-
 @pytest.fixture
 async def connection(cluster):
     connection = await cluster.connect()
@@ -129,8 +124,12 @@ async def connection(cluster):
     await connection.close()
 
 
-async def _counts(connection, tournament_type: TournamentType = TournamentType.TEXT) -> list[int]:
-    return await get_recent_completed_contender_counts(_Db(connection), tournament_type, limit=4, min_contenders=3)
+async def _ids(connection, tournament_type: TournamentType = TournamentType.TEXT, limit: int = 12) -> list[str]:
+    return await get_recent_completed_tournament_ids(_Db(connection), tournament_type, limit=limit)
+
+
+async def _completers(connection, tournament_id: str) -> int:
+    return await count_round_one_completers(_Db(connection), tournament_id)
 
 
 async def test_only_round_one_completers_count(connection):
@@ -149,7 +148,7 @@ async def test_only_round_one_completers_count(connection):
     )
     await _round(connection, "t", 2, {"d": [("r2_only", "success", 1.0), ("r2_also", "success", 1.0)]})
 
-    assert await _counts(connection) == [3]
+    assert await _completers(connection, "t") == 3
 
 
 async def test_a_miner_that_fails_one_task_but_completes_another_counts(connection):
@@ -161,45 +160,32 @@ async def test_a_miner_that_fails_one_task_but_completes_another_counts(connecti
         {"a": [("x", "failure", None), ("y", "success", 1.0)], "b": [("x", "success", 1.0), ("z", "success", 1.0)]},
     )
 
-    assert await _counts(connection) == [3]
+    assert await _completers(connection, "t") == 3
 
 
-async def test_the_latest_completed_tournament_is_counted(connection):
-    await _completed_with(connection, "a", 0, 5)
-    await _completed_with(connection, "b", 1, 7)
+async def test_a_tournament_without_round_one_has_no_completers(connection):
+    await _tournament(connection, "t", 0)
 
-    assert await _counts(connection) == [7, 5]
-
-
-async def test_a_first_completed_tournament_counts_on_its_own(connection):
-    await _completed_with(connection, "q1", 0, 6, tournament_type="quant")
-
-    assert await _counts(connection, TournamentType.QUANT) == [6]
-    assert await _counts(connection, TournamentType.TEXT) == []
+    assert await _completers(connection, "t") == 0
 
 
-async def test_pending_active_and_cancelled_tournaments_are_excluded_by_status(connection):
-    await _completed_with(connection, "a", 0, 5)
-    await _completed_with(connection, "c", 2, 6)
-    for day, (status, tournament_id) in enumerate([("cancelled", "b"), ("active", "d"), ("pending", "e")], start=3):
-        await _tournament(connection, tournament_id, day, status=status)
-        await _round(connection, tournament_id, 1, {f"{tournament_id}_task": [(f"h{i}", "success", 1.0) for i in range(8)]})
+async def test_ids_are_completed_tournaments_of_the_type_newest_first(connection):
+    await _tournament(connection, "a", 0)
+    await _tournament(connection, "b", 1, status="cancelled")
+    await _tournament(connection, "c", 2)
+    await _tournament(connection, "d", 3, status="active")
+    await _tournament(connection, "e", 4, status="pending")
+    await _tournament(connection, "q", 5, tournament_type="quant")
 
-    assert await _counts(connection) == [6, 5]
+    assert await _ids(connection) == ["c", "a"]
+    assert await _ids(connection, TournamentType.QUANT) == ["q"]
 
 
-async def test_the_window_is_the_last_four_completed(connection):
+async def test_ids_are_limited(connection):
     for i in range(6):
-        await _completed_with(connection, f"t{i}", i, 3 + i)
+        await _tournament(connection, f"t{i}", i)
 
-    assert await _counts(connection) == [8, 7, 6, 5]
-
-
-async def test_tournaments_below_the_contender_minimum_are_skipped_and_older_ones_fill_the_window(connection):
-    for day, (tournament_id, contenders) in enumerate(zip("abcdef", [3, 4, 2, 5, 0, 6])):
-        await _completed_with(connection, tournament_id, day, contenders)
-
-    assert await _counts(connection) == [6, 5, 4, 3]
+    assert await _ids(connection, limit=4) == ["t5", "t4", "t3", "t2"]
 
 
 async def _defences(connection, tournament_id: str) -> int:
