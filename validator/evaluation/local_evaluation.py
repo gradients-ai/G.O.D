@@ -274,6 +274,7 @@ async def run_evaluation_docker_image(
     models: list[str],
     model_type: ImageModelType,
     gpu_ids: list[int],
+    eval_seed: int,
     training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE,
     trigger_word: str | None = None,
     docker_image: str | None = None,
@@ -306,6 +307,7 @@ async def run_evaluation_docker_image(
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
         "IMAGE_TRAINING_MODE": training_mode.value,
+        "IMAGE_EVAL_SEED": str(eval_seed),
         **vcst.HF_CONTAINER_ENV_IMAGE,
     }
     if trigger_word:

@@ -1,6 +1,7 @@
 """Held-out image evaluation using each model's native training objective."""
 
 import gc
+import hashlib
 import json
 import logging
 import math
@@ -49,17 +50,23 @@ MODEL_REPOS = {
     "moss-image-base": "OpenMOSS-Team/MOSS-Image-Base",
 }
 TEMPLATE_ROOT = REPO_ROOT / "core" / "training_templates"
+# Cases per pass, spread evenly over the noise band in antithetic pairs: three evaluation seeds' worth of cases on
+# FLUX.2 (3 x 80); MOSS is about four times slower per case, so it gets three seeds of 40.
+CASES_PER_MODE = 240
+CASES_PER_MODE_BY_MODEL = {"moss-image-base": 120}
+MIN_REPEATS = 10
+MAX_REPEATS = 40
+SAMPLE_STEM_HEX_CHARS = 16
 LORA_DOWN_SUFFIXES = (".lora_down.weight", ".lora_A.weight")
 
-# AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise.
-# Keep scoring in the noisiest quartile (t ≈ 750–1000, σ ≈ 0.75–1.0).
-EVAL_MIN_DENOISING_STEPS = 0
-EVAL_MAX_DENOISING_STEPS = 250
-EVAL_MUSUBI_MIN_TIMESTEP = 750
+# AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise. Score sigma 0.70-0.95: above 0.95
+# rankings flip between seeds, below 0.70 an untrained base model catches up with trained LoRAs.
+EVAL_MIN_DENOISING_STEPS = 50
+EVAL_MAX_DENOISING_STEPS = 300
 EVAL_MUSUBI_MAX_TIMESTEP = 1000
-# HiDream O1 predicts pixel-space x0 with noise_scale=8; push into the noisiest 5%.
-EVAL_HIDREAM_MAX_DENOISING_STEPS = 50
-EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 950
+EVAL_HIDREAM_MIN_DENOISING_STEPS = 160
+EVAL_HIDREAM_MAX_DENOISING_STEPS = 460
+EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 330
 
 
 def lora_modules_from_file(path: Path) -> tuple[dict[str, int], dict[str, float], set[str]]:
@@ -99,6 +106,14 @@ def lora_network_spec(path: Path) -> tuple[int, float]:
     return modules_dim[name], modules_alpha[name]
 
 
+def sample_stem(target: bytes, source: bytes | None = None) -> str:
+    """A test sample's file stem: a hash of its image bytes, so evaluation seeds follow image content, not order."""
+    digest = hashlib.sha256(target)
+    if source is not None:
+        digest.update(source)
+    return digest.hexdigest()[:SAMPLE_STEM_HEX_CHARS]
+
+
 def _write_dataset(rows, root: Path, training_mode: str, blank: bool) -> Path:
     targets = root / "targets" if training_mode == "edit" else root
     controls = root / "controls" / "0"
@@ -107,9 +122,13 @@ def _write_dataset(rows, root: Path, training_mode: str, blank: bool) -> Path:
     if training_mode == "edit":
         controls.mkdir(parents=True)
         masks.mkdir()
-    for index, row in enumerate(rows):
+    stems = set()
+    for row in rows:
         _, target, caption, *remainder = row
-        stem = f"{index:06d}"
+        stem = sample_stem(target, remainder[0] if training_mode == "edit" else None)
+        if stem in stems:
+            raise ValueError("Image evaluation dataset contains a duplicate sample")
+        stems.add(stem)
         (targets / f"{stem}.png").write_bytes(target)
         (targets / f"{stem}.txt").write_text("" if blank else caption, encoding="utf-8")
         if training_mode == "edit":
@@ -177,7 +196,9 @@ def _evaluation_config(
     output: Path,
     steps: int,
     seed: int,
+    repeats: int | None = None,
 ) -> dict:
+    """repeats: cases per held-out sample; when given, the evaluator stratifies them across the band in antithetic pairs."""
     template = TEMPLATE_ROOT / TEMPLATES[(model_type, training_mode)]
     config = yaml.safe_load(template.read_text(encoding="utf-8"))
     process = config["config"]["process"][0]
@@ -185,6 +206,8 @@ def _evaluation_config(
     process["training_folder"] = str(output.parent / "unused-checkpoints")
     process["evaluation_output"] = str(output)
     process["evaluation_seed"] = seed
+    if repeats:
+        process["evaluation_repeats"] = repeats
     mask_dir = _mask_dir(dataset, training_mode)
     if mask_dir is not None:
         process["evaluation_mask_dir"] = str(mask_dir)
@@ -218,7 +241,9 @@ def _evaluation_config(
             "do_random_cfg": False,
             "prompt_dropout_prob": 0.0,
             "noise_multiplier": 1.0,
-            "min_denoising_steps": EVAL_MIN_DENOISING_STEPS,
+            "min_denoising_steps": (
+                EVAL_HIDREAM_MIN_DENOISING_STEPS if model_type == "hidream-o1" else EVAL_MIN_DENOISING_STEPS
+            ),
             "max_denoising_steps": (
                 EVAL_HIDREAM_MAX_DENOISING_STEPS
                 if model_type == "hidream-o1"
@@ -255,6 +280,7 @@ def _run_objective(
         output,
         sample_count * repeats,
         seed,
+        repeats,
     )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     subprocess.run(
@@ -262,6 +288,19 @@ def _run_objective(
     )
     records = json.loads(output.read_text(encoding="utf-8"))
     return _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
+
+
+def repeats_per_sample(samples: int, model_type: str | None = None) -> int:
+    """Repeats per held-out sample that keep samples x repeats near the model's cases per pass. Always even: repeats
+    are scored in antithetic pairs."""
+    cases = CASES_PER_MODE_BY_MODEL.get(model_type, CASES_PER_MODE)
+    repeats = max(MIN_REPEATS, min(MAX_REPEATS, cases // max(1, samples)))
+    return repeats - repeats % 2
+
+
+def musubi_global_seed(seed: int) -> int:
+    """Musubi's --seed must fit numpy's 32-bit range. Per-case noise still follows the full task seed (GOD_EVAL_SEED)."""
+    return seed % 2**32
 
 
 def _hidream_checkpoint(work_dir: Path) -> Path:
@@ -404,7 +443,7 @@ def _run_hidream_edit_objective(
             "--save_every_n_epochs",
             "999999",
             "--seed",
-            str(seed),
+            str(musubi_global_seed(seed)),
             "--output_dir",
             str(output_dir),
             "--output_name",
@@ -431,6 +470,10 @@ def evaluate(config: dict, output_path: Path) -> dict:
         work_dir = Path(temporary)
         rows = read_generation_dataset(config["dataset"], work_dir / "test.zip", config["training_mode"])
         rows = rows[: config["sample_limit"]]
+        if config.get("repeats") is None:
+            config["repeats"] = repeats_per_sample(len(rows), config["model_type"])
+        if config["repeats"] % 2 and not hidream_edit:
+            raise ValueError("Image objective evaluation needs an even repeat count (antithetic pairs)")
         if not rows:
             raise ValueError("Image objective evaluation dataset is empty")
         conditional = _write_dataset(rows, work_dir / "conditional", config["training_mode"], blank=False)
@@ -466,6 +509,7 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             config["seed"],
                         )
                 else:
+
                     def run(dataset, label):
                         return _run_objective(
                             *combination,
@@ -477,21 +521,21 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             config["repeats"],
                             config["seed"],
                         )
-                guided = run(conditional, "conditional")
+                captioned = run(conditional, "conditional")
                 blank = run(no_text, "no_text")
                 eval_loss = {
-                    "text_guided_losses": guided["losses"],
+                    "text_guided_losses": captioned["losses"],
                     "no_text_losses": blank["losses"],
                 }
-                if "changed_losses" in guided:
-                    eval_loss["text_guided_changed_losses"] = guided["changed_losses"]
-                if "unchanged_losses" in guided:
-                    eval_loss["text_guided_unchanged_losses"] = guided["unchanged_losses"]
+                if "changed_losses" in captioned:
+                    eval_loss["text_guided_changed_losses"] = captioned["changed_losses"]
+                if "unchanged_losses" in captioned:
+                    eval_loss["text_guided_unchanged_losses"] = captioned["unchanged_losses"]
                 if "changed_losses" in blank:
                     eval_loss["no_text_changed_losses"] = blank["changed_losses"]
                 if "unchanged_losses" in blank:
                     eval_loss["no_text_unchanged_losses"] = blank["unchanged_losses"]
-                coverage = guided.get("mean_mask_coverage", blank.get("mean_mask_coverage"))
+                coverage = captioned.get("mean_mask_coverage", blank.get("mean_mask_coverage"))
                 if coverage is not None:
                     eval_loss["mean_mask_coverage"] = coverage
                 result[repo] = {"eval_loss": eval_loss, "is_finetune": True}
@@ -504,6 +548,14 @@ def evaluate(config: dict, output_path: Path) -> dict:
     return result
 
 
+def _eval_seed() -> int:
+    """The task's evaluation seed. Required: a fixed default would make the noise predictable."""
+    value = os.environ.get("IMAGE_EVAL_SEED")
+    if not value:
+        raise SystemExit("Image evaluation requires IMAGE_EVAL_SEED")
+    return int(value)
+
+
 def main() -> None:
     configure_eval_logging()
     output = Path(os.environ.get("EVALUATION_RESULTS_PATH", "/aplp/evaluation_results.json"))
@@ -512,9 +564,9 @@ def main() -> None:
         "model_type": os.environ.get("MODEL_TYPE"),
         "training_mode": os.environ.get("IMAGE_TRAINING_MODE", "text-to-image"),
         "models": [value.strip() for value in os.environ.get("MODELS", "").split(",") if value.strip()],
-        "sample_limit": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_SAMPLES", "4")),
-        "repeats": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_REPEATS", "10")),
-        "seed": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_SEED", "42000")),
+        "sample_limit": int(os.environ.get("IMAGE_OBJECTIVE_EVAL_SAMPLES", "8")),
+        "repeats": int(os.environ["IMAGE_OBJECTIVE_EVAL_REPEATS"]) if os.environ.get("IMAGE_OBJECTIVE_EVAL_REPEATS") else None,
+        "seed": _eval_seed(),
     }
     if not config["dataset"] or not config["models"]:
         raise SystemExit("Image objective evaluation requires TEST_SPLIT_URL and MODELS")

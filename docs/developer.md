@@ -370,6 +370,8 @@ Where miners read their training logs: [miner.md](miner.md#troubleshooting).
 
 Supported task types: instruct, chat, DPO, GRPO and image. Compression tasks are not supported: the helper exits with an error.
 
+An image task is re-scored with the `eval_seed` the auditing endpoint publishes once the task finishes. Pass `--eval_seed` to override it, or to re-run a task whose seed is not published yet.
+
 Use it on tasks at most 7 days old. Older tasks have expired dataset links.
 
 The helper runs the image tags in `core/constants/docker.py`. Docker pulls a tag that is missing locally. To evaluate with this checkout's evaluator code, build the images first:

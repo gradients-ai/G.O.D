@@ -158,14 +158,15 @@ Your LoRA is applied to the task's base model and scored on the held-out images.
 
 | Families | Per held-out image |
 | --- | --- |
-| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its prediction) over a fixed set of noise levels ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
-| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss at high noise, with fixed seeds, averaged over 10 repeats on up to 4 held-out images ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
+| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its unguided prediction) at 8 even noise levels in sigma 0.70-0.95 ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
+| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss on the unguided prediction at sigma 0.70-0.95 (HiDream-O1 text-to-image 0.54-0.84 and edit 0.33-1.0, for its pixel-space noise), with the noise levels spread evenly across the band in sign-flipped noise pairs (about 240 cases per pass, 120 for MOSS) on up to 8 held-out images; edits weight the edited region and the rest of the image equally ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
 
 | Step | Rule |
 | --- | --- |
 | Two passes | once with the image's caption or edit instruction, once with an empty prompt |
 | Task score | 0.5 x the mean captioned loss + 0.5 x the mean empty-prompt loss |
 | Better | lower |
+| Noise | drawn from a random seed per task, the same for every entry; published once the task finishes |
 
 Source: [`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT`](../validator/evaluation/constants.py), [`_calculate_weighted_loss_for_image_eval`](../validator/scoring/tasks.py).
 

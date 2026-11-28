@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import secrets
 from datetime import datetime
 from typing import TYPE_CHECKING
 from typing import Literal
@@ -348,6 +349,26 @@ async def _insert_chat_task(connection: Connection, task: ChatRawTask, task_reco
     )
 
 
+async def get_or_create_image_eval_seed(task_id: UUID, psql_db: PSQLDB) -> int:
+    """The task's image evaluation seed, drawn once on first use and kept for every later evaluation of the task.
+
+    Every entry of a task, and every retry, scores on noise derived from this seed, so entries share their noise.
+    The seed is random, so the noise cannot be derived before the task is evaluated.
+    """
+    candidate = secrets.randbits(63)
+    query = f"""
+        UPDATE {cst.IMAGE_TASKS_TABLE}
+        SET {cst.EVAL_SEED} = COALESCE({cst.EVAL_SEED}, $2)
+        WHERE {cst.TASK_ID} = $1
+        RETURNING {cst.EVAL_SEED}
+    """
+    async with await psql_db.connection() as connection:
+        seed = await connection.fetchval(query, task_id, candidate)
+    if seed is None:
+        raise ValueError(f"No image task row for {task_id}")
+    return int(seed)
+
+
 async def _insert_image_task(connection: Connection, task: ImageRawTask, task_record: dict) -> None:
     query = f"""
         INSERT INTO {cst.IMAGE_TASKS_TABLE}
@@ -628,7 +649,7 @@ async def get_tasks_with_status(
                 """
             elif task_type == TaskType.IMAGETASK.value:
                 specific_query = f"""
-                    SELECT t.*, it.model_type, it.training_mode, it.trigger_word
+                    SELECT t.*, it.model_type, it.training_mode, it.trigger_word, it.eval_seed
                     FROM {cst.TASKS_TABLE} t
                     LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
@@ -1243,7 +1264,7 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             """
         elif task_type == TaskType.IMAGETASK.value:
             specific_query = f"""
-                SELECT t.*, it.model_type, it.training_mode, it.trigger_word
+                SELECT t.*, it.model_type, it.training_mode, it.trigger_word, it.eval_seed
                 FROM {cst.TASKS_TABLE} t
                 LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
@@ -1397,6 +1418,7 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
                     it.model_type,
                     it.training_mode,
                     it.trigger_word,
+                    it.eval_seed,
                     victorious_repo.repo as trained_model_repository
                 FROM {cst.TASKS_TABLE} tasks
                 LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON tasks.{cst.TASK_ID} = it.{cst.TASK_ID}
@@ -1591,7 +1613,7 @@ def _get_specific_query_for_task_type(task_type: str) -> str | None:
         """
     elif task_type == TaskType.IMAGETASK.value:
         return f"""
-            SELECT t.*, it.model_type, it.training_mode, it.trigger_word
+            SELECT t.*, it.model_type, it.training_mode, it.trigger_word, it.eval_seed
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
             WHERE t.{cst.TASK_ID} = ANY($1)
@@ -1723,7 +1745,7 @@ async def get_tasks_by_account_id(psql_db: PSQLDB, account_id: UUID, limit: int 
 
             elif task_type == TaskType.IMAGETASK.value:
                 image_query = f"""
-                    SELECT {cst.MODEL_TYPE}, {cst.TRIGGER_WORD}
+                    SELECT {cst.MODEL_TYPE}, {cst.TRIGGER_WORD}, {cst.EVAL_SEED}
                     FROM {cst.IMAGE_TASKS_TABLE}
                     WHERE {cst.TASK_ID} = $1
                 """

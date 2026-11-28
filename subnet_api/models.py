@@ -112,6 +112,7 @@ class ImageAuditTask(AuditTask):
     image_text_pairs: list[dict[str, Any]] | None = None
     model_type: str | None = None
     trigger_word: str | None = None
+    eval_seed: int | None = Field(default=None, description="Seed of the evaluation noise. Published once the task finishes.")
 
 
 class EnvAuditTask(AuditTask):

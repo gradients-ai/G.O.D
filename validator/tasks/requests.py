@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 import validator.tasks.datasets.constants as cst
 import validator.tasks.prep.constants as prep_cst
+import validator.tasks.synthetics.constants as synth_cst
 from core.constants.credentials import BUCKET_NAME
 from core.downloads import download_s3_file
 from core.interfaces import KeypairLike
@@ -95,11 +96,19 @@ async def get_total_image_dataset_size(task: ImageRawTask) -> int:
     return 0
 
 
+def synthetic_image_test_pairs(task: ImageRawTask) -> int | None:
+    """Synthetic tasks carry IMAGE_SYNTH_TEST_PAIRS extra held-out pairs; organic datasets keep the percentage split."""
+    if task.is_organic or not task.image_text_pairs:
+        return None
+    return synth_cst.IMAGE_SYNTH_TEST_PAIRS
+
+
 async def run_image_task_prep(task: ImageRawTask, keypair: KeypairLike | None = None, psql_db=None) -> ImageRawTask:
     test_url, train_url = await prepare_image_task(
         image_text_pairs=task.image_text_pairs,
         dataset_zip_url=task.ds if not task.image_text_pairs else None,
         training_mode=task.training_mode,
+        n_test=synthetic_image_test_pairs(task),
     )
     task.training_data = train_url
     task.test_data = test_url

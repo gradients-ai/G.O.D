@@ -46,6 +46,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.db.sql.tasks import get_or_create_image_eval_seed
 from validator.db.sql.tournament_performance import is_paired_comparison_task
 from validator.evaluation.docker_evaluation import decoded_model_urls_for
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
@@ -515,8 +516,10 @@ def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskT
         )
 
 
-def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) -> float:
-    """The task's weighted image loss: DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * mean(text-guided) + the rest * mean(no-text).
+def _calculate_weighted_loss_for_image_eval(
+    eval_result: EvaluationResultImage, weight: float = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
+) -> float:
+    """The task's weighted image loss: weight * mean(text-guided) + the rest * mean(no-text).
 
     NaN when the result carries no per-image losses or either loss vector is empty: nothing was measured, and a
     missing mean is never a loss of 0.
@@ -527,13 +530,12 @@ def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) 
 
     text_guided_avg = sum(losses.text_guided_losses) / len(losses.text_guided_losses)
     no_text_avg = sum(losses.no_text_losses) / len(losses.no_text_losses)
-    return (
-        eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg
-        + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
-    )
+    return weight * text_guided_avg + (1 - weight) * no_text_avg
 
 
-def _per_image_losses(eval_result: EvaluationResultImage) -> list[float] | None:
+def _per_image_losses(
+    eval_result: EvaluationResultImage, weight: float = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
+) -> list[float] | None:
     """The weighted loss of each test image, in test-image order; its mean is the task's weighted loss.
 
     None unless both loss vectors are non-empty and hold one value per test image (the same length).
@@ -543,17 +545,21 @@ def _per_image_losses(eval_result: EvaluationResultImage) -> list[float] | None:
         return None
     if len(losses.text_guided_losses) != len(losses.no_text_losses):
         return None
-    weight = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
     return [
         weight * text_guided + (1 - weight) * no_text
         for text_guided, no_text in zip(losses.text_guided_losses, losses.no_text_losses)
     ]
 
 
-def _image_miner_result(hotkey: str, eval_result: EvaluationResultImage, submission: Submission | None) -> MinerResultsImage:
+def _image_miner_result(
+    hotkey: str,
+    eval_result: EvaluationResultImage,
+    submission: Submission | None,
+    weight: float = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT,
+) -> MinerResultsImage:
     """One image entry's result. An entry that is not a fine-tune, or whose losses are empty, has no valid loss:
     NaN, with its reason, so it is never stored or ranked as a score."""
-    weighted_loss = _calculate_weighted_loss_for_image_eval(eval_result)
+    weighted_loss = _calculate_weighted_loss_for_image_eval(eval_result, weight)
     if not eval_result.is_finetune:
         return MinerResultsImage(
             hotkey=hotkey,
@@ -578,7 +584,7 @@ def _image_miner_result(hotkey: str, eval_result: EvaluationResultImage, submiss
         synth_loss=weighted_loss,
         is_finetune=True,
         submission=submission,
-        per_example_losses=_per_image_losses(eval_result),
+        per_example_losses=_per_image_losses(eval_result, weight),
     )
 
 
@@ -890,9 +896,13 @@ async def _evaluate_submissions(
         if not repos_to_evaluate:
             return results
 
+        if config is None:
+            raise ValueError("Image evaluation needs the database to read the task's evaluation seed")
+        eval_seed = await get_or_create_image_eval_seed(task.task_id, config.psql_db)
         evaluation_params = {
             "test_split_url": task.test_data,
             "original_model_repo": base_model,
+            "eval_seed": eval_seed,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
             "training_mode": task.training_mode,

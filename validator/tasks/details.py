@@ -263,7 +263,7 @@ def hide_sensitive_data_till_finished(task: AnyTypeTask, force_hidden: bool = Fa
                     source_image_url="hidden" if task.training_mode.value == "edit" else None,
                 )
             ]
-        if task.task_type == TaskType.ENVIRONMENTTASK:
+        if task.task_type in (TaskType.ENVIRONMENTTASK, TaskType.IMAGETASK):
             task.eval_seed = None
         task.test_data = None
         task.calibration_data = None

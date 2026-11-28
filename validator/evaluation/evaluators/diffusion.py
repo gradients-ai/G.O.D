@@ -25,6 +25,7 @@ from validator.evaluation.image_flow_adapter import ImageFlowAdapter
 from validator.evaluation.image_test_data import decoded_images
 from validator.evaluation.image_test_data import read_dataset
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,8 +39,19 @@ def _enable_download_progress() -> None:
         logger.info("huggingface progress bars unavailable; using stage logs only")
 
 
-DEFAULT_STRATA = 16
-DEFAULT_NOISES = 16
+# Score sigma 0.70-0.95 in even strata, unguided: above 0.95 rankings flip between seeds, below 0.70 an untrained base
+# model catches up with trained LoRAs, and a guided prediction rewards a vague base model over a LoRA that learned the task.
+DEFAULT_SIGMA_MIN = 0.70
+DEFAULT_SIGMA_MAX = 0.95
+DEFAULT_STRATA = 8
+CASES_PER_MODE = 512
+MIN_NOISES = 8
+MAX_NOISES = 64
+
+
+def noises_per_level(strata: int, images: int) -> int:
+    """Noise draws per level that keep strata x images x draws near CASES_PER_MODE."""
+    return max(MIN_NOISES, min(MAX_NOISES, CASES_PER_MODE // max(1, strata * images)))
 
 
 def load_base(api, repo, family, root):
@@ -94,6 +106,12 @@ def evaluate(config, output):
         validation = decoded_images(read_dataset(config["dataset"], scratch / "test.zip"))
         api = HfApi()
         adapter, base, clip, encoder = load_base(api, config["repo"], family, config["comfy_root"])
+        logger.info(
+            "scoring %s at %s strata in sigma [%s, %s], unguided", family, config["strata"], DEFAULT_SIGMA_MIN, DEFAULT_SIGMA_MAX
+        )
+        if config["noises"] is None:
+            config["noises"] = noises_per_level(config["strata"], len(validation))
+        logger.info("noise draws per level=%s for %s test images", config["noises"], len(validation))
         cases = []
         logger.info("eval_stage=encode_latents images=%s", len(validation))
         for index, item in enumerate(validation, start=1):
@@ -126,29 +144,41 @@ def evaluate(config, output):
                 vectors = {"text": [], "no_text": []}
                 first_check = None
                 logger.info("eval_stage=score_images repo=%s images=%s", repo, len(cases))
+
+                def conditioning(prompt):
+                    if prompt not in candidate_conditioning:
+                        candidate_conditioning[prompt] = adapter.conditioning(candidate_clip, prompt)
+                    return candidate_conditioning[prompt]
+
+                def run_pass(data, questions, positive, negative, cfg):
+                    sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse, None)
+                    guider = comfy.samplers.CFGGuider(model)
+                    guider.set_conds(positive, negative if cfg is not None else [])
+                    guider.set_cfg(cfg if cfg is not None else 1.0)
+                    schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
+                    guider.sample(torch.zeros_like(data["latent"]), data["latent"], sampler, schedule,
+                                  disable_pbar=True, seed=config["seed"])
+                    if len(sampler.rows) != len(questions) * config["noises"]:
+                        raise ValueError("Incomplete prediction cases")
+                    return sampler.rows
+
                 for image_index, item in enumerate(cases, start=1):
                     image_started = time.monotonic()
                     data = torch.load(item["cache"], map_location="cpu", weights_only=True)
                     questions = flow_cases(
-                        data["scaled"], item["id"], config["strata"], config["noises"]
+                        data["scaled"],
+                        item["id"],
+                        config["seed"],
+                        config["strata"],
+                        config["noises"],
+                        DEFAULT_SIGMA_MIN,
+                        DEFAULT_SIGMA_MAX,
                     )
-                    for mode in vectors:
-                        prompt = item["caption"] if mode == "text" else ""
-                        if prompt not in candidate_conditioning:
-                            candidate_conditioning[prompt] = adapter.conditioning(candidate_clip, prompt)
-                        sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse)
-                        guider = comfy.samplers.CFGGuider(model)
-                        guider.set_conds(candidate_conditioning[prompt], [])
-                        guider.set_cfg(1.0)
-                        schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
-                        guider.sample(torch.zeros_like(data["latent"]), data["latent"], sampler, schedule,
-                                      disable_pbar=True, seed=42)
-                        losses = [row["mse"] for row in sampler.rows]
-                        if len(losses) != config["strata"] * config["noises"]:
-                            raise ValueError("Incomplete prediction cases")
-                        vectors[mode].append(float(np.mean(losses)))
+                    for mode, prompt in (("text", item["caption"]), ("no_text", "")):
+                        rows = run_pass(data, questions, conditioning(prompt), None, None)
+                        vectors[mode].append(float(np.mean([row["mse"] for row in rows])))
                         if first_check is None:
-                            first_check = (data, questions, candidate_conditioning[prompt], losses)
+                            first_check = (data, questions, conditioning(prompt), None, None, [row["mse"] for row in rows])
                     logger.info(
                         "scored image %s/%s repo=%s name=%s elapsed=%.1fs",
                         image_index,
@@ -158,14 +188,9 @@ def evaluate(config, output):
                         time.monotonic() - image_started,
                     )
                 logger.info("eval_stage=repeatability_check repo=%s", repo)
-                data, questions, cond, original = first_check
-                repeated = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse)
-                guider = comfy.samplers.CFGGuider(model)
-                guider.set_conds(cond, [])
-                guider.set_cfg(1.0)
-                schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
-                guider.sample(torch.zeros_like(data["latent"]), data["latent"], repeated, schedule, disable_pbar=True, seed=42)
-                if not np.allclose(original, [r["mse"] for r in repeated.rows], rtol=1e-5, atol=1e-7):
+                data, questions, positive, negative, cfg, original = first_check
+                repeated = run_pass(data, questions, positive, negative, cfg)
+                if not np.allclose(original, [r["mse"] for r in repeated], rtol=1e-5, atol=1e-7):
                     raise ValueError("Prediction scores failed repeatability check")
                 result[repo] = {
                     "eval_loss": {"text_guided_losses": vectors["text"], "no_text_losses": vectors["no_text"]},
@@ -197,6 +222,14 @@ def evaluate(config, output):
         return result
 
 
+def _eval_seed() -> int:
+    """The task's evaluation seed. Required: a fixed default would make the noise predictable."""
+    value = os.environ.get("IMAGE_EVAL_SEED")
+    if not value:
+        raise SystemExit("Image evaluation requires IMAGE_EVAL_SEED")
+    return int(value)
+
+
 def main():
     configure_eval_logging()
     _enable_download_progress()
@@ -207,8 +240,9 @@ def main():
         "repo": os.environ.get("ORIGINAL_MODEL_REPO"), "family": os.environ.get("MODEL_TYPE"), "models": models,
         "comfy_root": Path(os.environ.get("COMFY_ROOT", "/app/validator/evaluation/ComfyUI")),
         "strata": int(os.environ.get("IMAGE_EVAL_STRATA", DEFAULT_STRATA)),
-        "noises": int(os.environ.get("IMAGE_EVAL_NOISES", DEFAULT_NOISES)),
+        "noises": int(os.environ["IMAGE_EVAL_NOISES"]) if os.environ.get("IMAGE_EVAL_NOISES") else None,
         "batch_size": int(os.environ.get("IMAGE_EVAL_BATCH_SIZE", 2)),
+        "seed": _eval_seed(),
     }
     logger.info(
         "image eval config family=%s base=%s models=%s strata=%s noises=%s batch_size=%s",
