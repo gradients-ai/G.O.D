@@ -78,7 +78,8 @@ changes:
     summary: >-
       This sets the numbers for the reward split announced in "Threshold recalibration and reward split".
       Guaranteed minimums become text 0.25, compression 0.15 and image 0.15, and the share that floats by
-      participation grows from 0.25 to 0.45. Compression's floating share is no longer phased in: it competes for
+      participation grows from 0.25 to 0.45, so the largest share of emissions now floats based on dynamic entries
+      rather than fixed values. Compression's floating share is no longer phased in: it competes for
       it like text and image from day one. Participation now counts contenders, miners ranked above the boss in round 1,
       rather than sign-ups. 1st place gets 85% of a tournament's share when a new boss takes the crown
       and in its first defence, then 1.5625 points less per defence down to 60% at the 17th defence. The rest goes
