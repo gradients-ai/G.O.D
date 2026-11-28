@@ -369,7 +369,7 @@ Shares are fractions of the subnet's miner emission.
 | Image | 0.15 | 0.60 |
 | Compression | 0.15 | 0.60 |
 
-The minimums sum to 0.55. The other 0.45 floats between the tournaments by participation: a tournament with fewer contenders than its minimum implies gets more of it. A maximum is the minimum plus the whole 0.45.
+The minimums sum to 0.55. The other 0.45 floats between the tournaments by participation: a tournament with fewer contenders gets more of it. A maximum is the minimum plus the whole 0.45.
 
 Participation counts contenders, not sign-ups. A contender is a miner that ranked above the boss in round 1. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 

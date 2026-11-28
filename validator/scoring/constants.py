@@ -64,9 +64,9 @@ MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.
 
 # Participation-driven auto-balancer for the flex pool. Each cycle the flex pool is split from the
 # rolling contender counts of the last N completed tournaments of each type (a contender
-# ranked strictly above the boss in round 1; see emission_balance.tournament_contenders): an oversubscribed type
-# cedes flex toward a starved one. Minimums are never touched. See validator.scoring.emission_balance.
-EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = flex split at the minimums' ratio, higher = sharper reaction
+# ranked above the boss in round 1; see emission_balance.tournament_contenders), on raw counts: a type with more
+# contenders cedes flex toward one with fewer. Minimums are never touched. See validator.scoring.emission_balance.
+EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = flex split equally, higher = sharper reaction
 EMISSION_BALANCE_ROLLING_WINDOW = 4      # last N completed tournaments of each type, the latest included
 EMISSION_MIN_ENTRANTS_FOR_BALANCE = 3    # ignore degenerate tournaments below this contender count
 EMISSION_CONTENDER_SCAN_LIMIT = 12       # completed tournaments of a type looked at to fill the window

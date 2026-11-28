@@ -34,19 +34,33 @@ def test_bases_stay_within_minimum_and_minimum_plus_flex(text_entrants, image_en
     assert cts.TOURNAMENT_IMAGE_WEIGHT <= weights[IMAGE] <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
 
 
-def test_balanced_participation_splits_flex_at_minimums_ratio():
-    # 100:60:60 contenders matches the minimums' ratio (0.25:0.15:0.15), so flex splits 100/220, 60/220, 60/220 of 0.45.
-    weights = compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
+def test_equal_contender_counts_split_flex_equally():
+    weights = compute_dynamic_base_weights({TEXT: 12, QUANT: 12, IMAGE: 12})
 
-    flex = cts.EMISSION_FLEX_POOL
-    assert weights[TEXT] == pytest.approx(0.25 + flex * 100 / 220)
-    assert weights[QUANT] == pytest.approx(0.15 + flex * 60 / 220)
-    assert weights[IMAGE] == pytest.approx(0.15 + flex * 60 / 220)
+    third = cts.EMISSION_FLEX_POOL / 3
+    assert weights[TEXT] == pytest.approx(0.25 + third)
+    assert weights[QUANT] == pytest.approx(0.15 + third)
+    assert weights[IMAGE] == pytest.approx(0.15 + third)
 
 
-def test_no_history_falls_back_to_balanced_split():
+def test_flex_follows_raw_counts_not_the_minimums():
+    # Image has more contenders than text, so it gets less flex, whatever the minimums are.
+    weights = compute_dynamic_base_weights({TEXT: 10, QUANT: 20, IMAGE: 12})
+    flex = {t: weights[t] - minimum for t, minimum in ((TEXT, 0.25), (QUANT, 0.15), (IMAGE, 0.15))}
+
+    assert flex[TEXT] > flex[IMAGE] > flex[QUANT]
+    assert flex[TEXT] / flex[IMAGE] == pytest.approx((12 / 10) ** cts.EMISSION_BALANCE_ALPHA)
+
+
+def test_no_history_falls_back_to_an_equal_split():
     assert compute_dynamic_base_weights({TEXT: None, QUANT: None, IMAGE: None}) == pytest.approx(
-        compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
+        compute_dynamic_base_weights({TEXT: 7, QUANT: 7, IMAGE: 7})
+    )
+
+
+def test_a_type_with_no_history_gets_the_average_count():
+    assert compute_dynamic_base_weights({TEXT: 10, QUANT: None, IMAGE: 20}) == pytest.approx(
+        compute_dynamic_base_weights({TEXT: 10, QUANT: 15, IMAGE: 20})
     )
 
 

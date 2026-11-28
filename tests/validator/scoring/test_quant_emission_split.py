@@ -58,12 +58,11 @@ def test_bases_sum_to_one_and_stay_within_minimum_plus_flex(text, quant, image):
     assert cts.TOURNAMENT_IMAGE_WEIGHT <= weights[IMAGE] <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
 
 
-def test_balanced_entrants_split_flex_at_the_minimums_ratio():
-    weights = compute_dynamic_base_weights({TEXT: 100, QUANT: 60, IMAGE: 60})
+def test_equal_contenders_split_flex_equally():
+    weights = compute_dynamic_base_weights({TEXT: 30, QUANT: 30, IMAGE: 30})
 
-    total_minimum = 0.25 + 0.15 + 0.15
     for tournament_type, minimum in ((TEXT, 0.25), (QUANT, 0.15), (IMAGE, 0.15)):
-        assert weights[tournament_type] == pytest.approx(minimum + cts.EMISSION_FLEX_POOL * minimum / total_minimum)
+        assert weights[tournament_type] == pytest.approx(minimum + cts.EMISSION_FLEX_POOL / 3)
 
 
 def test_max_weight_by_type_returns_the_plain_caps():
