@@ -87,8 +87,8 @@ changes:
     why: >-
       A long-held crown should leave more on the table for the miners closing in on it, while a new boss still gets
       a strong reward for taking it. A larger floating share lets emissions follow where competition is thin, and
-      counting only miners who beat the boss in round 1 stops anyone shifting that share to another track by
-      entering just to fail or resubmitting the boss. Lower fees make it cheaper to compete.
+      counting only miners who beat the boss in round 1 keeps that share tied to real competition. Lower fees make
+      it cheaper to compete.
     areas: [text, image, compression]
     status: in_progress
     date: 2026-12-07
